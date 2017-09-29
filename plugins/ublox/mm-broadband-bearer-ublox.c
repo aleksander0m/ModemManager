@@ -1015,32 +1015,60 @@ ugcntrd_ready (MMBaseModem  *modem,
     GError                 *error = NULL;
     guint                   tx_bytes = 0;
     guint                   rx_bytes = 0;
+    guint                   total_tx_bytes = 0;
+    guint                   total_rx_bytes = 0;
     guint                   cid;
+    guint                   i, n;
+    StatsResult            *result;
 
     self = MM_BROADBAND_BEARER_UBLOX (g_task_get_source_object (task));
 
-    cid = mm_broadband_bearer_get_3gpp_cid (MM_BROADBAND_BEARER (self));
-
     response = mm_base_modem_at_command_finish (modem, res, &error);
-    if (response)
-        mm_ublox_parse_ugcntrd_response_for_cid (response,
-                                                 cid,
-                                                 &tx_bytes, &rx_bytes,
-                                                 NULL, NULL,
-                                                 &error);
-
-    if (error) {
-        g_prefix_error (&error, "Couldn't load PDP context %u statistics: ", cid);
+    if (!response) {
+        g_prefix_error (&error, "Couldn't load PDP context statistics: ");
         g_task_return_error (task, error);
-    } else {
-        StatsResult *result;
-
-        result = g_new (StatsResult, 1);
-        result->bytes_rx = rx_bytes;
-        result->bytes_tx = tx_bytes;
-        g_task_return_pointer (task, result, g_free);
+        g_object_unref  (task);
+        return;
     }
 
+    cid = mm_broadband_bearer_get_3gpp_cid (MM_BROADBAND_BEARER (self));
+    if (!mm_ublox_parse_ugcntrd_response_for_cid (response,
+                                                  cid,
+                                                  &total_tx_bytes, &total_rx_bytes,
+                                                  NULL, NULL,
+                                                  &error)) {
+        g_prefix_error (&error, "Couldn't load primary PDP context %u statistics: ", cid);
+        g_task_return_error (task, error);
+        g_object_unref (task);
+        return;
+    }
+
+    mm_dbg ("Primary context (cid %u) statistics: tx %u bytes, rx %u bytes", cid, total_tx_bytes, total_rx_bytes);
+
+    n = mm_bearer_properties_get_n_secondary (mm_base_bearer_peek_config (MM_BASE_BEARER (self)));
+    for (i = 0; i < n; i++) {
+        cid = mm_broadband_bearer_get_3gpp_secondary_cid (MM_BROADBAND_BEARER (self), i);
+        if (!mm_ublox_parse_ugcntrd_response_for_cid (response,
+                                                      cid,
+                                                      &tx_bytes, &rx_bytes,
+                                                      NULL, NULL,
+                                                      NULL)) {
+            mm_dbg ("Couldn't load statistics for secondary context (cid %u)", cid);
+            continue;
+        }
+
+        mm_dbg ("Secondary context (cid %u) statistics: tx %u bytes, rx %u bytes", cid, tx_bytes, rx_bytes);
+
+        total_tx_bytes += tx_bytes;
+        total_rx_bytes += rx_bytes;
+    }
+
+    mm_dbg ("Total context statistics: tx %u bytes, rx %u bytes", total_tx_bytes, total_rx_bytes);
+
+    result = g_new (StatsResult, 1);
+    result->bytes_rx = total_rx_bytes;
+    result->bytes_tx = total_tx_bytes;
+    g_task_return_pointer (task, result, g_free);
     g_object_unref (task);
 }
 

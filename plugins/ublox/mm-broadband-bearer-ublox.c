@@ -67,6 +67,12 @@ typedef struct {
     MMPort                 *data;
     guint                   cid;
     gboolean                auth_required;
+    gboolean                secondary;
+    guint                   secondary_i;
+    /* For route settings */
+    gchar                  *unquoted_apn;
+    gchar                  *address;
+    GList                  *apn_destinations;
     /* For IPv4 settings */
     MMBearerIpConfig       *ip_config;
 } CommonConnectContext;
@@ -74,6 +80,9 @@ typedef struct {
 static void
 common_connect_context_free (CommonConnectContext *ctx)
 {
+    g_list_free_full (ctx->apn_destinations, g_free);
+    g_free (ctx->unquoted_apn);
+    g_free (ctx->address);
     if (ctx->ip_config)
         g_object_unref (ctx->ip_config);
     if (ctx->data)
@@ -89,6 +98,8 @@ common_connect_task_new (MMBroadbandBearerUblox  *self,
                          MMBroadbandModem        *modem,
                          MMPortSerialAt          *primary,
                          guint                    cid,
+                         gboolean                 secondary,
+                         guint                    secondary_i,
                          MMPort                  *data,
                          GCancellable            *cancellable,
                          GAsyncReadyCallback      callback,
@@ -98,28 +109,22 @@ common_connect_task_new (MMBroadbandBearerUblox  *self,
     GTask                *task;
 
     ctx = g_slice_new0 (CommonConnectContext);
-    ctx->self    = g_object_ref (self);
-    ctx->modem   = g_object_ref (modem);
-    ctx->primary = g_object_ref (primary);
-    ctx->cid     = cid;
+    ctx->self        = g_object_ref (self);
+    ctx->modem       = g_object_ref (modem);
+    ctx->primary     = g_object_ref (primary);
+    ctx->cid         = cid;
+    ctx->secondary   = secondary;
+    ctx->secondary_i = secondary_i;
+    if (data)
+        ctx->data = g_object_ref (data);
+
+    if (!secondary)
+        ctx->unquoted_apn = g_strdup (mm_bearer_properties_get_apn (mm_base_bearer_peek_config (MM_BASE_BEARER (self))));
+    else
+        ctx->unquoted_apn = g_strdup (mm_bearer_properties_get_secondary_apn (mm_base_bearer_peek_config (MM_BASE_BEARER (self)), ctx->secondary_i));
 
     task = g_task_new (self, cancellable, callback, user_data);
     g_task_set_task_data (task, ctx, (GDestroyNotify) common_connect_context_free);
-
-    /* We need a net data port */
-    if (data)
-        ctx->data = g_object_ref (data);
-    else {
-        ctx->data = mm_base_modem_get_best_data_port (MM_BASE_MODEM (modem), MM_PORT_TYPE_NET);
-        if (!ctx->data) {
-            g_task_return_new_error (task,
-                                     MM_CORE_ERROR,
-                                     MM_CORE_ERROR_NOT_FOUND,
-                                     "No valid data port found to launch connection");
-            g_object_unref (task);
-            return NULL;
-        }
-    }
 
     return task;
 }
@@ -275,6 +280,7 @@ get_ip_config_3gpp (MMBroadbandBearer   *self,
                                           MM_BROADBAND_MODEM (modem),
                                           primary,
                                           cid,
+                                          FALSE, 0, /* unused */
                                           data,
                                           NULL,
                                           callback,
@@ -327,10 +333,127 @@ dial_3gpp_finish (MMBroadbandBearer  *self,
     return MM_PORT (g_task_propagate_pointer (G_TASK (res), error));
 }
 
+static gboolean
+dial_secondary_3gpp_finish (MMBroadbandBearer  *self,
+                            GAsyncResult       *res,
+                            GError           **error)
+{
+    return g_task_propagate_boolean (G_TASK (res), error);
+}
+
 static void
-cgact_activate_ready (MMBaseModem  *modem,
-                      GAsyncResult *res,
-                      GTask        *task)
+complete_connected (GTask *task)
+{
+    CommonConnectContext *ctx;
+
+    ctx = (CommonConnectContext *) g_task_get_task_data (task);
+
+    if (!ctx->secondary)
+        /* primary context */
+        g_task_return_pointer (task, g_object_ref (ctx->data), g_object_unref);
+    else
+        /* secondary context */
+        g_task_return_boolean (task, TRUE);
+    g_object_unref (task);
+}
+
+static void uiproute_add_destination (GTask *task);
+
+static void
+uiproute_add_destination_ready (MMBaseModem  *modem,
+                                GAsyncResult *res,
+                                GTask        *task)
+{
+    GError               *error = NULL;
+    CommonConnectContext *ctx;
+
+    ctx = (CommonConnectContext *) g_task_get_task_data (task);
+
+    if (!mm_base_modem_at_command_finish (modem, res, &error)) {
+        g_task_return_error (task, error);
+        g_object_unref (task);
+        return;
+    }
+
+    uiproute_add_destination (task);
+}
+
+static void
+uiproute_add_destination (GTask *task)
+{
+    CommonConnectContext *ctx;
+    gchar                *cmd;
+    gchar                *next_destination;
+
+    ctx = (CommonConnectContext *) g_task_get_task_data (task);
+
+    if (!ctx->apn_destinations) {
+        complete_connected (task);
+        return;
+    }
+
+    next_destination = ctx->apn_destinations->data;
+    ctx->apn_destinations = g_list_delete_link (ctx->apn_destinations, ctx->apn_destinations);
+
+    /* Add destination route */
+    mm_dbg ("Adding default route for destination %s...", next_destination);
+    g_assert (ctx->cid >= 1);
+    cmd = g_strdup_printf ("+UIPROUTE=\"add -host %s gw %s netmask 0.0.0.0 dev inm%u\"",
+                           next_destination, ctx->address, ctx->cid - 1);
+    mm_base_modem_at_command (MM_BASE_MODEM (ctx->modem),
+                              cmd,
+                              10,
+                              FALSE,
+                              (GAsyncReadyCallback) uiproute_add_destination_ready,
+                              task);
+    g_free (cmd);
+    g_free (next_destination);
+}
+
+static void
+uiproute_del_default_ready (MMBaseModem  *modem,
+                            GAsyncResult *res,
+                            GTask        *task)
+{
+    GError               *error = NULL;
+    CommonConnectContext *ctx;
+
+    ctx = (CommonConnectContext *) g_task_get_task_data (task);
+
+    if (!mm_base_modem_at_command_finish (modem, res, &error)) {
+        g_task_return_error (task, error);
+        g_object_unref (task);
+        return;
+    }
+
+    uiproute_add_destination (task);
+}
+
+static void
+uiproute_del_default (GTask *task)
+{
+    CommonConnectContext *ctx;
+    gchar                *cmd;
+
+    ctx = (CommonConnectContext *) g_task_get_task_data (task);
+
+    mm_dbg ("Removing default route through %s...", ctx->address);
+    g_assert (ctx->cid >= 1);
+    cmd = g_strdup_printf ("+UIPROUTE=\"del -net default gw %s netmask 0.0.0.0 dev inm%u\"", ctx->address, ctx->cid - 1);
+    mm_base_modem_at_command (MM_BASE_MODEM (ctx->modem),
+                              cmd,
+                              10,
+                              FALSE,
+                              (GAsyncReadyCallback) uiproute_del_default_ready,
+                              task);
+    g_free (cmd);
+}
+
+
+static void
+uiproute_ready (MMBaseModem  *modem,
+                GAsyncResult *res,
+                GTask        *task)
 {
     const gchar          *response;
     GError               *error = NULL;
@@ -339,11 +462,120 @@ cgact_activate_ready (MMBaseModem  *modem,
     ctx = (CommonConnectContext *) g_task_get_task_data (task);
 
     response = mm_base_modem_at_command_finish (modem, res, &error);
-    if (!response)
+    if (!response) {
         g_task_return_error (task, error);
-    else
-        g_task_return_pointer (task, g_object_ref (ctx->data), g_object_unref);
-    g_object_unref (task);
+        g_object_unref (task);
+        return;
+    }
+
+    if (!mm_ublox_parse_uiproute_response_find_default_route_for_ipaddr (response, ctx->address, &error)) {
+        mm_dbg ("Couldn't find default route: %s", error->message);
+        g_error_free (error);
+        /* Try to add destination right away */
+        uiproute_add_destination (task);
+        return;
+    }
+
+    uiproute_del_default (task);
+}
+
+static void
+cgpaddr_ready (MMBaseModem  *modem,
+               GAsyncResult *res,
+               GTask        *task)
+{
+    const gchar          *response;
+    GError               *error = NULL;
+    CommonConnectContext *ctx;
+    GList                *pdp_addresses;
+    GList                *l;
+
+    ctx = (CommonConnectContext *) g_task_get_task_data (task);
+
+    response = mm_base_modem_at_command_finish (modem, res, &error);
+    if (!response) {
+        g_task_return_error (task, error);
+        g_object_unref (task);
+        return;
+    }
+
+    pdp_addresses = mm_3gpp_parse_cgpaddr_exec_response (response, &error);
+    if (!pdp_addresses) {
+        g_task_return_error (task, error);
+        g_object_unref (task);
+        return;
+    }
+
+    for (l = pdp_addresses; !ctx->address && l; l = g_list_next (l)) {
+        const MM3gppPdpContextAddress *item;
+
+        item = l->data;
+        if (ctx->cid == item->cid) {
+            mm_dbg ("IP address for PDP context %u found: %s", ctx->cid, item->address);
+            ctx->address = g_strdup (item->address);
+        }
+    }
+
+    mm_3gpp_pdp_context_address_list_free (pdp_addresses);
+
+    if (!ctx->address) {
+        g_task_return_new_error (task, MM_CORE_ERROR, MM_CORE_ERROR_FAILED,
+                                 "No IP address specified for PDP context %u", ctx->cid);
+        g_object_unref (task);
+        return;
+    }
+
+    mm_dbg ("querying current routes...");
+    mm_base_modem_at_command (MM_BASE_MODEM (ctx->modem),
+                              "+UIPROUTE?",
+                              10,
+                              FALSE,
+                              (GAsyncReadyCallback) uiproute_ready,
+                              task);
+}
+
+static void
+cgact_activate_ready (MMBaseModem  *modem,
+                      GAsyncResult *res,
+                      GTask        *task)
+{
+    const gchar          *response;
+    GError               *error = NULL;
+    CommonConnectContext *ctx;
+    gchar                *cmd;
+
+    ctx = (CommonConnectContext *) g_task_get_task_data (task);
+
+    response = mm_base_modem_at_command_finish (modem, res, &error);
+    if (!response) {
+        g_task_return_error (task, error);
+        g_object_unref (task);
+        return;
+    }
+
+    ctx->apn_destinations = mm_ublox_get_apn_destinations (ctx->unquoted_apn, &error);
+    if (error) {
+        g_task_return_error (task, error);
+        g_object_unref (task);
+        return;
+    }
+
+    /* If there are no custom APN destinations, then we're just fine with the
+     * default route generated */
+    if (!ctx->apn_destinations) {
+        complete_connected (task);
+        return;
+    }
+
+    mm_dbg ("querying PDP context %u IP address...", ctx->cid);
+    cmd = g_strdup_printf ("+CGPADDR=%u", ctx->cid);
+    mm_base_modem_at_command (MM_BASE_MODEM (ctx->modem),
+                              cmd,
+                              10,
+                              FALSE,
+                              (GAsyncReadyCallback) cgpaddr_ready,
+                              task);
+    g_free (cmd);
 }
 
 static void
@@ -399,7 +631,6 @@ uauthreq_ready (MMBaseModem  *modem,
     GError                 *error = NULL;
     gchar                  *cmd;
     const gchar            *pdp_type;
-    const gchar            *unquoted_apn;
     gchar                  *apn;
     MMBearerIpFamily        ip_family;
     CommonConnectContext   *ctx;
@@ -436,12 +667,7 @@ uauthreq_ready (MMBaseModem  *modem,
         return;
     }
 
-    if (!ctx->secondary)
-        unquoted_apn = mm_bearer_properties_get_apn (mm_base_bearer_peek_config (MM_BASE_BEARER (self)));
-    else
-        unquoted_apn = mm_bearer_properties_get_secondary_apn (mm_base_bearer_peek_config (MM_BASE_BEARER (self)), ctx->secondary_i);
-    apn = mm_port_serial_at_quote_string (unquoted_apn);
-
+    apn = mm_port_serial_at_quote_string (ctx->unquoted_apn);
     cmd = g_strdup_printf ("+CGDCONT=%u,\"%s\",%s",
                            ctx->cid, pdp_type, apn);
     g_free (apn);
@@ -513,8 +739,13 @@ out:
         gchar       *quoted_user;
         gchar       *quoted_password;
 
-        user     = mm_bearer_properties_get_user     (mm_base_bearer_peek_config (MM_BASE_BEARER (ctx->self)));
-        password = mm_bearer_properties_get_password (mm_base_bearer_peek_config (MM_BASE_BEARER (ctx->self)));
+        if (!ctx->secondary) {
+            user     = mm_bearer_properties_get_user     (mm_base_bearer_peek_config (MM_BASE_BEARER (ctx->self)));
+            password = mm_bearer_properties_get_password (mm_base_bearer_peek_config (MM_BASE_BEARER (ctx->self)));
+        } else {
+            user     = mm_bearer_properties_get_secondary_user     (mm_base_bearer_peek_config (MM_BASE_BEARER (ctx->self)), ctx->secondary_i);
+            password = mm_bearer_properties_get_secondary_password (mm_base_bearer_peek_config (MM_BASE_BEARER (ctx->self)), ctx->secondary_i);
+        }
 
         quoted_user     = mm_port_serial_at_quote_string (user);
         quoted_password = mm_port_serial_at_quote_string (password);
@@ -589,9 +820,14 @@ check_supported_authentication_methods (GTask *task)
     self = g_task_get_source_object (task);
     ctx = (CommonConnectContext *) g_task_get_task_data (task);
 
-    user         = mm_bearer_properties_get_user         (mm_base_bearer_peek_config (MM_BASE_BEARER (ctx->self)));
-    password     = mm_bearer_properties_get_password     (mm_base_bearer_peek_config (MM_BASE_BEARER (ctx->self)));
     allowed_auth = mm_bearer_properties_get_allowed_auth (mm_base_bearer_peek_config (MM_BASE_BEARER (ctx->self)));
+    if (!ctx->secondary) {
+        user     = mm_bearer_properties_get_user     (mm_base_bearer_peek_config (MM_BASE_BEARER (ctx->self)));
+        password = mm_bearer_properties_get_password (mm_base_bearer_peek_config (MM_BASE_BEARER (ctx->self)));
+    } else {
+        user     = mm_bearer_properties_get_secondary_user     (mm_base_bearer_peek_config (MM_BASE_BEARER (ctx->self)), ctx->secondary_i);
+        password = mm_bearer_properties_get_secondary_password (mm_base_bearer_peek_config (MM_BASE_BEARER (ctx->self)), ctx->secondary_i);
+    }
 
     /* Flag whether authentication is required. If it isn't, we won't fail
      * connection attempt if the +UAUTHREQ command fails */
@@ -621,17 +857,59 @@ dial_3gpp (MMBroadbandBearer   *self,
            GAsyncReadyCallback  callback,
            gpointer             user_data)
 {
+    GTask                *task;
+    CommonConnectContext *ctx;
+
+    task = common_connect_task_new (MM_BROADBAND_BEARER_UBLOX (self),
+                                    MM_BROADBAND_MODEM (modem),
+                                    primary,
+                                    cid,
+                                    FALSE,
+                                    0,
+                                    NULL,
+                                    cancellable,
+                                    callback,
+                                    user_data);
+
+    /* Data port mandatory in primary context */
+    ctx = g_task_get_task_data (task);
+    ctx->data = mm_base_modem_get_best_data_port (MM_BASE_MODEM (modem), MM_PORT_TYPE_NET);
+    if (!ctx->data) {
+        g_task_return_new_error (task,
+                                 MM_CORE_ERROR,
+                                 MM_CORE_ERROR_NOT_FOUND,
+                                 "No valid data port found to launch connection");
+        g_object_unref (task);
+        return;
+    }
+
+    check_supported_authentication_methods (task);
+}
+
+static void
+dial_secondary_3gpp (MMBroadbandBearer   *self,
+                     MMBaseModem         *modem,
+                     MMPortSerialAt      *primary,
+                     guint                cid,
+                     guint                secondary_i,
+                     GCancellable        *cancellable,
+                     GAsyncReadyCallback  callback,
+                     gpointer             user_data)
+{
     GTask *task;
 
-    if (!(task = common_connect_task_new (MM_BROADBAND_BEARER_UBLOX (self),
-                                          MM_BROADBAND_MODEM (modem),
-                                          primary,
-                                          cid,
-                                          NULL, /* data, unused */
-                                          cancellable,
-                                          callback,
-                                          user_data)))
-        return;
+    task = common_connect_task_new (MM_BROADBAND_BEARER_UBLOX (self),
+                                    MM_BROADBAND_MODEM (modem),
+                                    primary,
+                                    cid,
+                                    TRUE,
+                                    secondary_i,
+                                    NULL,
+                                    cancellable,
+                                    callback,
+                                    user_data);
+
+    /* Data port NOT set in secondary context */
 
     check_supported_authentication_methods (task);
 }
@@ -680,6 +958,7 @@ disconnect_3gpp  (MMBroadbandBearer   *self,
                                           MM_BROADBAND_MODEM (modem),
                                           primary,
                                           cid,
+                                          FALSE, 0, /* unused */
                                           data,
                                           NULL,
                                           callback,
@@ -967,6 +1246,8 @@ mm_broadband_bearer_ublox_class_init (MMBroadbandBearerUbloxClass *klass)
     broadband_bearer_class->disconnect_3gpp_finish = disconnect_3gpp_finish;
     broadband_bearer_class->dial_3gpp = dial_3gpp;
     broadband_bearer_class->dial_3gpp_finish = dial_3gpp_finish;
+    broadband_bearer_class->dial_secondary_3gpp = dial_secondary_3gpp;
+    broadband_bearer_class->dial_secondary_3gpp_finish = dial_secondary_3gpp_finish;
     broadband_bearer_class->get_ip_config_3gpp = get_ip_config_3gpp;
     broadband_bearer_class->get_ip_config_3gpp_finish = get_ip_config_3gpp_finish;
 

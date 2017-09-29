@@ -172,4 +172,17 @@ gboolean mm_ublox_parse_ugcntrd_response_for_cid (const gchar  *response,
                                                   guint        *total_rx_bytes,
                                                   GError      **error);
 
+/*****************************************************************************/
+/* +UIPROUTE response parser */
+
+gboolean mm_ublox_parse_uiproute_response_find_default_route_for_ipaddr (const gchar  *reply,
+                                                                         const gchar  *ipaddr,
+                                                                         GError      **error);
+
+/*****************************************************************************/
+/* APN destinations configuration */
+
+GList *mm_ublox_get_apn_destinations (const gchar  *apn,
+                                      GError      **error);
+
 #endif  /* MM_MODEM_HELPERS_UBLOX_H */

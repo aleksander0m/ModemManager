@@ -366,15 +366,13 @@ activate_3gpp (GTask *task)
 }
 
 static void
-uauthreq_ready (MMBaseModem  *modem,
-                GAsyncResult *res,
-                GTask        *task)
+cgdcont_again_ready (MMBaseModem  *modem,
+                     GAsyncResult *res,
+                     GTask        *task)
 {
-    const gchar *response;
-    GError      *error = NULL;
+    GError *error = NULL;
 
-    response = mm_base_modem_at_command_finish (modem, res, &error);
-    if (!response) {
+    if (!mm_base_modem_at_command_finish (modem, res, &error)) {
         CommonConnectContext *ctx;
 
         ctx = (CommonConnectContext *) g_task_get_task_data (task);
@@ -389,6 +387,73 @@ uauthreq_ready (MMBaseModem  *modem,
     }
 
     activate_3gpp (task);
+}
+
+static void
+uauthreq_ready (MMBaseModem  *modem,
+                GAsyncResult *res,
+                GTask        *task)
+{
+    MMBroadbandBearerUblox *self;
+    const gchar            *response;
+    GError                 *error = NULL;
+    gchar                  *cmd;
+    const gchar            *pdp_type;
+    const gchar            *unquoted_apn;
+    gchar                  *apn;
+    MMBearerIpFamily        ip_family;
+    CommonConnectContext   *ctx;
+
+    self = g_task_get_source_object (task);
+    ctx  = g_task_get_task_data (task);
+
+    response = mm_base_modem_at_command_finish (modem, res, &error);
+    if (!response) {
+        /* If authentication required and the +UAUTHREQ failed, abort */
+        if (ctx->auth_required) {
+            g_task_return_error (task, error);
+            g_object_unref (task);
+            return;
+        }
+        /* Otherwise, ignore */
+        g_error_free (error);
+    }
+
+    /* TOBY-L4 engineering releases (<= 40-16) have a bug where the PDP context
+     * must be re-defined after configuring authentication, so just repeat the
+     * CGDCONT command now */
+    ip_family = mm_broadband_bearer_get_3gpp_ip_family (MM_BROADBAND_BEARER (self));
+    pdp_type = mm_3gpp_get_pdp_type_from_ip_family (ip_family);
+    if (!pdp_type) {
+        gchar * str;
+
+        str = mm_bearer_ip_family_build_string_from_mask (ip_family);
+        g_task_return_new_error (task,
+                                 MM_CORE_ERROR, MM_CORE_ERROR_INVALID_ARGS,
+                                 "Unsupported IP type requested: '%s'", str);
+        g_object_unref (task);
+        g_free (str);
+        return;
+    }
+
+    if (!ctx->secondary)
+        unquoted_apn = mm_bearer_properties_get_apn (mm_base_bearer_peek_config (MM_BASE_BEARER (self)));
+    else
+        unquoted_apn = mm_bearer_properties_get_secondary_apn (mm_base_bearer_peek_config (MM_BASE_BEARER (self)), ctx->secondary_i);
+    apn = mm_port_serial_at_quote_string (unquoted_apn);
+
+    cmd = g_strdup_printf ("+CGDCONT=%u,\"%s\",%s",
+                           ctx->cid, pdp_type, apn);
+    g_free (apn);
+
+    mm_dbg ("re-sending PDP context %u setup...", ctx->cid);
+    mm_base_modem_at_command (MM_BASE_MODEM (ctx->modem),
+                              cmd,
+                              10,
+                              FALSE,
+                              (GAsyncReadyCallback) cgdcont_again_ready,
+                              task);
+    g_free (cmd);
 }
 
 static void

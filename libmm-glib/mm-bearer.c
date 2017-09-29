@@ -652,6 +652,45 @@ mm_bearer_peek_stats (MMBearer *self)
 /*****************************************************************************/
 
 /**
+ * mm_bearer_get_connected_apns:
+ * @self: A #MMBearer.
+ *
+ * Gets the list of connected APNs.
+ *
+ * <warning>The returned value is only valid until the property changes so
+ * it is only safe to use this function on the thread where
+ * @self was constructed. Use mm_bearer_dup_connected_apns() if on another
+ * thread.</warning>
+ *
+ * Returns: (transfer none): The connected apns, or %NULL if none available. Do not free the returned value, it belongs to @self.
+ */
+const gchar * const *
+mm_bearer_get_connected_apns (MMBearer *self)
+{
+    g_return_val_if_fail (MM_IS_BEARER (self), NULL);
+
+    return mm_gdbus_bearer_get_connected_apns (MM_GDBUS_BEARER (self));
+}
+
+/**
+ * mm_bearer_dup_connected_apns:
+ * @self: A #MMBearer.
+ *
+ * Gets a copy of the list of connected APNs.
+ *
+ * Returns: (transfer full): The connected apns, or %NULL if none available. The returned value should be freed with g_strfreev().
+ */
+gchar **
+mm_bearer_dup_connected_apns (MMBearer *self)
+{
+    g_return_val_if_fail (MM_IS_BEARER (self), NULL);
+
+    return mm_gdbus_bearer_dup_connected_apns (MM_GDBUS_BEARER (self));
+}
+
+/*****************************************************************************/
+
+/**
  * mm_bearer_connect_finish:
  * @self: A #MMBearer.
  * @res: The #GAsyncResult obtained from the #GAsyncReadyCallback passed to mm_bearer_connect().

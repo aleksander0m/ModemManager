@@ -136,11 +136,21 @@ print_bearer_info (MMBearer *bearer)
     MMBearerIpConfig *ipv6_config;
     MMBearerProperties *properties;
     MMBearerStats *stats;
+    gchar *connected_apns_string;
 
     ipv4_config = mm_bearer_get_ipv4_config (bearer);
     ipv6_config = mm_bearer_get_ipv6_config (bearer);
     properties = mm_bearer_get_properties (bearer);
     stats = mm_bearer_get_stats (bearer);
+
+    if (mm_bearer_get_connected_apns (bearer)) {
+        connected_apns_string = g_strjoinv (", ", (gchar **)mm_bearer_get_connected_apns (ctx->bearer));
+        if (!connected_apns_string[0]) {
+            g_free (connected_apns_string);
+            connected_apns_string = NULL;
+        }
+    } else
+        connected_apns_string = NULL;
 
     /* Not the best thing to do, as we may be doing _get() calls twice, but
      * easiest to maintain */
@@ -152,14 +162,16 @@ print_bearer_info (MMBearer *bearer)
     g_print ("Bearer '%s'\n",
              mm_bearer_get_path (bearer));
     g_print ("  -------------------------\n"
-             "  Status             |   connected: '%s'\n"
-             "                     |   suspended: '%s'\n"
-             "                     |   interface: '%s'\n"
-             "                     |  IP timeout: '%u'\n",
+             "  Status             |       connected: '%s'\n"
+             "                     |       suspended: '%s'\n"
+             "                     |       interface: '%s'\n"
+             "                     |      IP timeout: '%u'\n"
+             "                     |  connected APNs: '%s'\n",
              mm_bearer_get_connected (bearer) ? "yes" : "no",
              mm_bearer_get_suspended (bearer) ? "yes" : "no",
              VALIDATE_UNKNOWN (mm_bearer_get_interface (bearer)),
-             mm_bearer_get_ip_timeout (bearer));
+             mm_bearer_get_ip_timeout (bearer),
+             VALIDATE_UNKNOWN (connected_apns_string));
 
     if (properties) {
         gchar *ip_family_str;

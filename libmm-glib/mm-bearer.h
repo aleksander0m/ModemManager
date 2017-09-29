@@ -113,6 +113,9 @@ MMBearerIpConfig   *mm_bearer_peek_ipv6_config (MMBearer *self);
 MMBearerStats      *mm_bearer_get_stats        (MMBearer *self);
 MMBearerStats      *mm_bearer_peek_stats       (MMBearer *self);
 
+const gchar * const  *mm_bearer_get_connected_apns (MMBearer *self);
+gchar               **mm_bearer_dup_connected_apns (MMBearer *self);
+
 G_END_DECLS
 
 #endif /* _MM_BEARER_H_ */

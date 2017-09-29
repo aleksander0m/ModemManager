@@ -286,5 +286,12 @@
     -->
     <property name="Properties" type="a{sv}" access="read" />
 
+    <!--
+        ConnectedAPNs:
+
+        List of APNs connected (primary and secondaries).
+    -->
+    <property name="ConnectedAPNs" type="as" access="read" />
+
   </interface>
 </node>

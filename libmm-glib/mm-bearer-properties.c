@@ -44,23 +44,34 @@ G_DEFINE_TYPE (MMBearerProperties, mm_bearer_properties, G_TYPE_OBJECT);
 
 struct _MMBearerPropertiesPrivate {
     /* APN */
-    gchar *apn;
+    gchar **apn;
     /* IP type */
     MMBearerIpFamily ip_type;
     /* Allowed auth */
     MMBearerAllowedAuth allowed_auth;
+    /* User */
+    gchar **user;
+    /* Password */
+    gchar **password;
     /* Number */
     gchar *number;
-    /* User */
-    gchar *user;
-    /* Password */
-    gchar *password;
     /* Roaming allowance */
     gboolean allow_roaming_set;
     gboolean allow_roaming;
     /* Protocol of the Rm interface */
     MMModemCdmaRmProtocol rm_protocol;
 };
+
+/*****************************************************************************/
+
+guint
+mm_bearer_properties_get_n_secondary (MMBearerProperties *self)
+{
+    guint total;
+
+    total = self->priv->apn ? g_strv_length (self->priv->apn) : 0;
+    return (total > 1 ? total - 1 : 0);
+}
 
 /*****************************************************************************/
 
@@ -77,8 +88,8 @@ mm_bearer_properties_set_apn (MMBearerProperties *self,
 {
     g_return_if_fail (MM_IS_BEARER_PROPERTIES (self));
 
-    g_free (self->priv->apn);
-    self->priv->apn = g_strdup (apn);
+    g_strfreev (self->priv->apn);
+    self->priv->apn = g_strsplit (apn, MM_BEARER_PROPERTY_SEPARATOR, -1);
 }
 
 /**
@@ -94,7 +105,15 @@ mm_bearer_properties_get_apn (MMBearerProperties *self)
 {
     g_return_val_if_fail (MM_IS_BEARER_PROPERTIES (self), NULL);
 
-    return self->priv->apn;
+    return (self->priv->apn ? self->priv->apn[0] : NULL);
+}
+
+const gchar *
+mm_bearer_properties_get_secondary_apn (MMBearerProperties *self, guint i)
+{
+    g_return_val_if_fail (MM_IS_BEARER_PROPERTIES (self), NULL);
+
+    return ((self->priv->apn && g_strv_length (self->priv->apn) > (i + 1)) ? self->priv->apn[i + 1] : NULL);
 }
 
 /*****************************************************************************/
@@ -146,8 +165,8 @@ mm_bearer_properties_set_user (MMBearerProperties *self,
 {
     g_return_if_fail (MM_IS_BEARER_PROPERTIES (self));
 
-    g_free (self->priv->user);
-    self->priv->user = g_strdup (user);
+    g_strfreev (self->priv->user);
+    self->priv->user = g_strsplit (user, MM_BEARER_PROPERTY_SEPARATOR, -1);
 }
 
 /**
@@ -163,7 +182,15 @@ mm_bearer_properties_get_user (MMBearerProperties *self)
 {
     g_return_val_if_fail (MM_IS_BEARER_PROPERTIES (self), NULL);
 
-    return self->priv->user;
+    return (self->priv->user ? self->priv->user[0] : NULL);
+}
+
+const gchar *
+mm_bearer_properties_get_secondary_user (MMBearerProperties *self, guint i)
+{
+    g_return_val_if_fail (MM_IS_BEARER_PROPERTIES (self), NULL);
+
+    return ((self->priv->user && g_strv_length (self->priv->user) > (i + 1)) ? self->priv->user[i + 1] : NULL);
 }
 
 /*****************************************************************************/
@@ -181,8 +208,8 @@ mm_bearer_properties_set_password (MMBearerProperties *self,
 {
     g_return_if_fail (MM_IS_BEARER_PROPERTIES (self));
 
-    g_free (self->priv->password);
-    self->priv->password = g_strdup (password);
+    g_strfreev (self->priv->password);
+    self->priv->password = g_strsplit (password, MM_BEARER_PROPERTY_SEPARATOR, -1);
 }
 
 /**
@@ -198,7 +225,15 @@ mm_bearer_properties_get_password (MMBearerProperties *self)
 {
     g_return_val_if_fail (MM_IS_BEARER_PROPERTIES (self), NULL);
 
-    return self->priv->password;
+    return (self->priv->password ? self->priv->password[0] : NULL);
+}
+
+const gchar *
+mm_bearer_properties_get_secondary_password (MMBearerProperties *self, guint i)
+{
+    g_return_val_if_fail (MM_IS_BEARER_PROPERTIES (self), NULL);
+
+    return ((self->priv->password && g_strv_length (self->priv->password) > (i + 1)) ? self->priv->password[i + 1] : NULL);
 }
 
 /*****************************************************************************/
@@ -359,7 +394,7 @@ mm_bearer_properties_get_dictionary (MMBearerProperties *self)
         g_variant_builder_add (&builder,
                                "{sv}",
                                PROPERTY_APN,
-                               g_variant_new_string (self->priv->apn));
+                               g_variant_new_take_string (g_strjoinv (MM_BEARER_PROPERTY_SEPARATOR, self->priv->apn)));
 
     if (self->priv->allowed_auth != MM_BEARER_ALLOWED_AUTH_UNKNOWN)
         g_variant_builder_add (&builder,
@@ -371,13 +406,13 @@ mm_bearer_properties_get_dictionary (MMBearerProperties *self)
         g_variant_builder_add (&builder,
                                "{sv}",
                                PROPERTY_USER,
-                               g_variant_new_string (self->priv->user));
+                               g_variant_new_take_string (g_strjoinv (MM_BEARER_PROPERTY_SEPARATOR, self->priv->user)));
 
     if (self->priv->password)
         g_variant_builder_add (&builder,
                                "{sv}",
                                PROPERTY_PASSWORD,
-                               g_variant_new_string (self->priv->password));
+                               g_variant_new_take_string (g_strjoinv (MM_BEARER_PROPERTY_SEPARATOR, self->priv->password)));
 
     if (self->priv->ip_type != MM_BEARER_IP_FAMILY_NONE)
         g_variant_builder_add (&builder,
@@ -659,16 +694,34 @@ mm_bearer_properties_dup (MMBearerProperties *orig)
 
 /*****************************************************************************/
 
+static gboolean
+strv_equal (const gchar **a, const gchar **b)
+{
+    guint alen, blen, i;
+
+    alen = (a ? g_strv_length ((GStrv)a) : 0);
+    blen = (b ? g_strv_length ((GStrv)b) : 0);
+
+    if (alen != blen)
+        return FALSE;
+
+    for (i = 0; i < alen; i++) {
+        if (!g_str_equal (a[i], b[i]))
+            return FALSE;
+    }
+    return TRUE;
+}
+
 gboolean
 mm_bearer_properties_cmp (MMBearerProperties *a,
                           MMBearerProperties *b)
 {
-    return ((!g_strcmp0 (a->priv->apn, b->priv->apn)) &&
+    return ((strv_equal ((const gchar **)a->priv->apn, (const gchar **)b->priv->apn)) &&
             (a->priv->ip_type == b->priv->ip_type) &&
             (!g_strcmp0 (a->priv->number, b->priv->number)) &&
             (a->priv->allowed_auth == b->priv->allowed_auth) &&
-            (!g_strcmp0 (a->priv->user, b->priv->user)) &&
-            (!g_strcmp0 (a->priv->password, b->priv->password)) &&
+            (strv_equal ((const gchar **)a->priv->user, (const gchar **)b->priv->user)) &&
+            (strv_equal ((const gchar **)a->priv->password, (const gchar **)b->priv->password)) &&
             (a->priv->allow_roaming == b->priv->allow_roaming) &&
             (a->priv->allow_roaming_set == b->priv->allow_roaming_set) &&
             (a->priv->rm_protocol == b->priv->rm_protocol));
@@ -709,9 +762,9 @@ finalize (GObject *object)
 {
     MMBearerProperties *self = MM_BEARER_PROPERTIES (object);
 
-    g_free (self->priv->apn);
-    g_free (self->priv->user);
-    g_free (self->priv->password);
+    g_strfreev (self->priv->apn);
+    g_strfreev (self->priv->user);
+    g_strfreev (self->priv->password);
     g_free (self->priv->number);
 
     G_OBJECT_CLASS (mm_bearer_properties_parent_class)->finalize (object);

@@ -163,6 +163,7 @@ print_bearer_info (MMBearer *bearer)
 
     if (properties) {
         gchar *ip_family_str;
+        guint  n_secondary, i;
 
         ip_family_str = (mm_bearer_ip_family_build_string_from_mask (
                              mm_bearer_properties_get_ip_type (properties)));
@@ -183,6 +184,16 @@ print_bearer_info (MMBearer *bearer)
                  VALIDATE_UNKNOWN (mm_modem_cdma_rm_protocol_get_string (
                                        mm_bearer_properties_get_rm_protocol (properties))));
         g_free (ip_family_str);
+
+        n_secondary = mm_bearer_properties_get_n_secondary (properties);
+        for (i = 0; i < n_secondary; i++) {
+            g_print ("  Secondary context  |         apn: '%s'\n"
+                     "                     |        user: '%s'\n"
+                     "                     |    password: '%s'\n",
+                     VALIDATE_NONE (mm_bearer_properties_get_secondary_apn (properties, i)),
+                     VALIDATE_NONE (mm_bearer_properties_get_secondary_user (properties, i)),
+                     VALIDATE_NONE (mm_bearer_properties_get_secondary_password (properties, i)));
+        }
     }
 
     /* IPv4 */

@@ -23,6 +23,8 @@
 #error "Only <libmm-glib.h> can be included directly."
 #endif
 
+#define MM_BEARER_PROPERTY_SEPARATOR "|"
+
 G_BEGIN_DECLS
 
 #define MM_TYPE_BEARER_PROPERTIES            (mm_bearer_properties_get_type ())
@@ -75,13 +77,18 @@ void mm_bearer_properties_set_rm_protocol   (MMBearerProperties *self,
                                              MMModemCdmaRmProtocol protocol);
 
 const gchar           *mm_bearer_properties_get_apn           (MMBearerProperties *self);
-MMBearerAllowedAuth    mm_bearer_properties_get_allowed_auth  (MMBearerProperties *self);
 const gchar           *mm_bearer_properties_get_user          (MMBearerProperties *self);
 const gchar           *mm_bearer_properties_get_password      (MMBearerProperties *self);
+MMBearerAllowedAuth    mm_bearer_properties_get_allowed_auth  (MMBearerProperties *self);
 MMBearerIpFamily       mm_bearer_properties_get_ip_type       (MMBearerProperties *self);
 gboolean               mm_bearer_properties_get_allow_roaming (MMBearerProperties *self);
 const gchar           *mm_bearer_properties_get_number        (MMBearerProperties *self);
 MMModemCdmaRmProtocol  mm_bearer_properties_get_rm_protocol   (MMBearerProperties *self);
+
+guint                  mm_bearer_properties_get_n_secondary        (MMBearerProperties *self);
+const gchar           *mm_bearer_properties_get_secondary_apn      (MMBearerProperties *self, guint i);
+const gchar           *mm_bearer_properties_get_secondary_user     (MMBearerProperties *self, guint i);
+const gchar           *mm_bearer_properties_get_secondary_password (MMBearerProperties *self, guint i);
 
 /*****************************************************************************/
 /* ModemManager/libmm-glib/mmcli specific methods */

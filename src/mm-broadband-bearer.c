@@ -68,6 +68,7 @@ struct _MMBroadbandBearerPrivate {
     MMFlowControl flow_control;
 
     /*-- 3GPP specific --*/
+    MMBearerIpFamily ip_family;
     /* CID of the primary PDP context */
     guint cid;
     /* Array of CIDs for secondary PDP contexts */
@@ -91,6 +92,12 @@ ensure_secondary_cids_ready (MMBroadbandBearer *self)
 }
 
 /*****************************************************************************/
+
+MMBearerIpFamily
+mm_broadband_bearer_get_3gpp_ip_family (MMBroadbandBearer *self)
+{
+    return self->priv->ip_family;
+}
 
 guint
 mm_broadband_bearer_get_3gpp_cid (MMBroadbandBearer *self)
@@ -1144,7 +1151,6 @@ connect_3gpp (MMBroadbandBearer   *self,
     DetailedConnectContext *ctx;
     GTask                  *task;
     const gchar            *apn;
-    MMBearerIpFamily        ip_family;
 
     g_assert (primary != NULL);
 
@@ -1157,13 +1163,13 @@ connect_3gpp (MMBroadbandBearer   *self,
     g_task_set_task_data (task, ctx, (GDestroyNotify)detailed_connect_context_free);
 
     apn = mm_bearer_properties_get_apn (mm_base_bearer_peek_config (MM_BASE_BEARER (self)));
-    ip_family = select_bearer_ip_family (self);
+    self->priv->ip_family = select_bearer_ip_family (self);
 
     MM_BROADBAND_BEARER_GET_CLASS (self)->cid_selection_3gpp (self,
                                                               ctx->modem,
                                                               ctx->primary,
                                                               apn,
-                                                              ip_family,
+                                                              self->priv->ip_family,
                                                               cancellable,
                                                               (GAsyncReadyCallback)cid_selection_3gpp_ready,
                                                               task);

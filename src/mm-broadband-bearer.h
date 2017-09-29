@@ -164,8 +164,9 @@ void          mm_broadband_bearer_new        (MMBroadbandModem *modem,
 MMBaseBearer *mm_broadband_bearer_new_finish (GAsyncResult *res,
                                               GError **error);
 
-guint        mm_broadband_bearer_get_3gpp_cid           (MMBroadbandBearer *self);
-guint        mm_broadband_bearer_get_3gpp_secondary_cid (MMBroadbandBearer *self,
-                                                         guint              i);
+MMBearerIpFamily mm_broadband_bearer_get_3gpp_ip_family     (MMBroadbandBearer *self);
+guint            mm_broadband_bearer_get_3gpp_cid           (MMBroadbandBearer *self);
+guint            mm_broadband_bearer_get_3gpp_secondary_cid (MMBroadbandBearer *self,
+                                                             guint              i);
 
 #endif /* MM_BROADBAND_BEARER_H */

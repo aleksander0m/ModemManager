@@ -1468,3 +1468,142 @@ out:
         *out_total_rx_bytes = total_rx_bytes;
     return TRUE;
 }
+
+/*****************************************************************************/
+/* +UIPROUTE? response parser
+ *
+ * E.g.:
+ * +UIPROUTE: Kernel IP routing table
+ * +UIPROUTE: Destination     Gateway         Genmask         Flags Metric Ref    Use Iface
+ * +UIPROUTE: default         10.156.9.115    0.0.0.0         UG    0      0        0 inm1
+ * +UIPROUTE: default         10.156.88.200   0.0.0.0         UG    0      0        0 inm0
+ * +UIPROUTE: 192.168.2.0     *               255.255.255.0   U     0      0        0 usb0
+ * +UIPROUTE: 192.168.90.0    *               255.255.255.0   U     0      0        0 eth0
+ */
+
+gboolean
+mm_ublox_parse_uiproute_response_find_default_route_for_ipaddr (const gchar  *reply,
+                                                                const gchar  *ipaddr,
+                                                                GError      **error)
+{
+    GError     *inner_error = NULL;
+    GRegex     *r;
+    GMatchInfo *match_info;
+    gboolean    found = FALSE;
+
+    if (!reply || !reply[0])
+        goto out;
+
+    reply = mm_strip_tag (reply, "+UIPROUTE: Kernel IP routing table");
+
+    r = g_regex_new ("\\+UIPROUTE:\\s*([^ ]*)\\s*([^ ]*)\\s*([^ ]*)\\s*([^ ]*)\\s*([^ ]*)\\s*([^ ]*)\\s*([^ ]*)\\s*([^ \\r\\n]*)(?:\\r\\n)",
+                     G_REGEX_DOLLAR_ENDONLY | G_REGEX_RAW, 0, &inner_error);
+    g_assert (r);
+
+    g_regex_match_full (r, reply, strlen (reply), 0, 0, &match_info, &inner_error);
+    while (!inner_error && g_match_info_matches (match_info)) {
+        gchar *entry_destination = NULL;
+        gchar *entry_address = NULL;
+
+        if (!(entry_destination = mm_get_string_unquoted_from_match_info (match_info, 1))) {
+            inner_error = g_error_new (MM_CORE_ERROR,
+                                       MM_CORE_ERROR_FAILED,
+                                       "Couldn't parse destination from reply: '%s'",
+                                       reply);
+            break;
+        }
+
+        if (!g_str_equal (entry_destination, "default"))
+            goto next;
+
+        if (!(entry_address = mm_get_string_unquoted_from_match_info (match_info, 2))) {
+            inner_error = g_error_new (MM_CORE_ERROR,
+                                       MM_CORE_ERROR_FAILED,
+                                       "Couldn't parse address from reply: '%s'",
+                                       reply);
+            break;
+        }
+
+        if (g_str_equal (entry_address, ipaddr))
+            found = TRUE;
+
+    next:
+        g_free (entry_destination);
+        g_free (entry_address);
+
+        if (found)
+            break;
+
+        g_match_info_next (match_info, &inner_error);
+    }
+
+    if (match_info)
+        g_match_info_free (match_info);
+    g_regex_unref (r);
+
+    if (inner_error) {
+        g_propagate_error (error, inner_error);
+        g_prefix_error (error, "Couldn't properly parse list of routes. ");
+        return FALSE;
+    }
+
+ out:
+    if (!found) {
+        g_set_error (error, MM_CORE_ERROR, MM_CORE_ERROR_NOT_FOUND,
+                     "No default route entry found");
+        return FALSE;
+    }
+
+    return TRUE;
+}
+
+/*****************************************************************************/
+/* Query custom destination routes per apn */
+
+#if !defined MM_UBLOX_APN_DESTINATIONS_DIR
+# define MM_UBLOX_APN_DESTINATIONS_DIR "/etc/ModemManager/"
+#endif
+
+#if !defined MM_UBLOX_APN_DESTINATIONS_EXT
+# define MM_UBLOX_APN_DESTINATIONS_EXT ".route"
+#endif
+
+GList *
+mm_ublox_get_apn_destinations (const gchar  *apn,
+                               GError      **error)
+{
+    gchar  *filepath;
+    gchar  *contents = NULL;
+    GList  *destinations = NULL;
+    gchar **split = NULL;
+    guint   i;
+
+    filepath = g_strdup_printf ("%s%s%s", MM_UBLOX_APN_DESTINATIONS_DIR, apn, MM_UBLOX_APN_DESTINATIONS_EXT);
+
+    /* If file doesn't exist, log about it and return no destinations */
+    if (!g_file_test (filepath, G_FILE_TEST_EXISTS)) {
+        mm_dbg ("No APN destinations file for '%s'", apn);
+        goto out;
+    }
+
+    if (!g_file_get_contents (filepath, &contents, NULL, error))
+        goto out;
+
+    split = g_strsplit_set (contents, "\r\n", -1);
+    if (!split)
+        goto out;
+
+    for (i = 0; split[i]; i++) {
+        g_strstrip (split[i]);
+        if (split[i][0]) {
+            mm_dbg ("APN destination found: '%s'", split[i]);
+            destinations = g_list_append (destinations, g_strdup (split[i]));
+        }
+    }
+
+ out:
+    g_strfreev (split);
+    g_free (contents);
+    g_free (filepath);
+    return destinations;
+}

@@ -120,6 +120,9 @@ struct _MMBaseBearerPrivate {
     GTimer *duration_timer;
     /* Flag to specify whether reloading stats is supported or not */
     gboolean reload_stats_unsupported;
+
+    /* Secondary connection contexts */
+    GPtrArray *secondary_connection_contexts;
 };
 
 /*****************************************************************************/
@@ -660,6 +663,428 @@ reset_signal_handlers (MMBaseBearer *self)
 }
 
 /*****************************************************************************/
+/* Secondary context connection logic */
+
+typedef enum {
+    SECONDARY_CONNECTION_CONTEXT_STEP_FIRST,
+    SECONDARY_CONNECTION_CONTEXT_STEP_TIMEOUT,
+    SECONDARY_CONNECTION_CONTEXT_STEP_CONNECT,
+    SECONDARY_CONNECTION_CONTEXT_STEP_MONITOR_INITIAL,
+    SECONDARY_CONNECTION_CONTEXT_STEP_MONITOR,
+    SECONDARY_CONNECTION_CONTEXT_STEP_DISCONNECT,
+} SecondaryConnectionContextStep;
+
+#define MAX_SECONDARY_MONITOR_ERRORS 2 // 10
+
+#define CONNECT_RETRY_ATTEMPTS 10
+static const guint connect_retry_timeouts[] = {
+    10, 60, 600,
+};
+
+typedef struct {
+    volatile gint                   ref_count;
+    MMBaseBearer                   *self;
+    guint                           idx;
+    SecondaryConnectionContextStep  step;
+    /* Pre-connection timeout */
+    guint timeout_id;
+    guint timeout_idx;
+    guint timeout_n;
+    /* Connection attempt */
+    GCancellable *connect_cancellable;
+    /* Connection monitoring */
+    guint monitor_id;
+    guint monitor_errors;
+    /* Context stop logic */
+    GCancellable   *abort_cancellable;
+    GDestroyNotify  abort_callback;
+    gpointer       *abort_user_data;
+} SecondaryConnectionContext;
+
+static void
+secondary_connection_context_unref (SecondaryConnectionContext *ctx)
+{
+    if (g_atomic_int_dec_and_test (&ctx->ref_count)) {
+        g_assert (!ctx->monitor_id);
+        mm_dbg ("Secondary connection context (#%u) disposed", ctx->idx);
+        g_clear_object (&ctx->abort_cancellable);
+        g_clear_object (&ctx->connect_cancellable);
+        g_slice_free (SecondaryConnectionContext, ctx);
+    }
+}
+
+static SecondaryConnectionContext *
+secondary_connection_context_ref (SecondaryConnectionContext *ctx)
+{
+    g_atomic_int_inc (&ctx->ref_count);
+    return ctx;
+}
+
+static void secondary_connection_context_step (SecondaryConnectionContext *ctx);
+
+static void
+disconnect_secondary_ready (MMBaseBearer               *self,
+                            GAsyncResult               *res,
+                            SecondaryConnectionContext *ctx)
+{
+    GError *error = NULL;
+
+    if (!MM_BASE_BEARER_GET_CLASS (self)->disconnect_secondary_finish (self, res, &error)) {
+        mm_info ("Secondary connection context (#%u) disconnection failed: %s", ctx->idx, error->message);
+        g_error_free (error);
+    } else
+        mm_info ("Secondary connection context (#%u) disconnected", ctx->idx);
+
+    /* Reconnect after timeout */
+    ctx->step = SECONDARY_CONNECTION_CONTEXT_STEP_TIMEOUT;
+    secondary_connection_context_step (ctx);
+}
+
+static void
+load_connection_status_secondary_ready (MMBaseBearer               *self,
+                                        GAsyncResult               *res,
+                                        SecondaryConnectionContext *ctx)
+{
+    GError                   *error = NULL;
+    MMBearerConnectionStatus  status;
+
+    status = MM_BASE_BEARER_GET_CLASS (self)->load_connection_status_secondary_finish (self, res, &error);
+
+    switch (status) {
+    case MM_BEARER_CONNECTION_STATUS_CONNECTED:
+        mm_dbg ("secondary connection context (#%u) is connected", ctx->idx);
+        break;
+
+    case MM_BEARER_CONNECTION_STATUS_DISCONNECTED:
+        /* Need to reconnect? */
+        mm_info ("secondary connection context (#%u) is disconnected", ctx->idx);
+        g_assert (!error);
+        ctx->step = SECONDARY_CONNECTION_CONTEXT_STEP_CONNECT;
+        secondary_connection_context_step (ctx);
+        return;
+
+    /* Error checking? */
+    case MM_BEARER_CONNECTION_STATUS_UNKNOWN:
+        mm_warn ("checking status of secondary connection context (#%u) failed: %s", ctx->idx, error->message);
+        g_clear_error (&error);
+        ctx->monitor_errors++;
+        /* If max errors reached, explicitly disconnect before reconnecting */
+        if (ctx->monitor_errors == MAX_SECONDARY_MONITOR_ERRORS) {
+            ctx->monitor_errors = 0;
+            ctx->step = SECONDARY_CONNECTION_CONTEXT_STEP_DISCONNECT;
+            secondary_connection_context_step (ctx);
+            return;
+        }
+        /* assume we're connected but we got a temporary error... */
+        break;
+    default:
+        g_assert_not_reached ();
+        break;
+    }
+
+    /* We're connected, just go on */
+    if (ctx->step == SECONDARY_CONNECTION_CONTEXT_STEP_MONITOR_INITIAL)
+        ctx->step++;
+    g_assert (ctx->step == SECONDARY_CONNECTION_CONTEXT_STEP_MONITOR);
+    secondary_connection_context_step (ctx);
+}
+
+static gboolean
+monitor_secondary_ready (SecondaryConnectionContext *ctx)
+{
+    ctx->monitor_id = 0;
+
+    MM_BASE_BEARER_GET_CLASS (ctx->self)->load_connection_status_secondary (
+        ctx->self,
+        ctx->idx,
+        (GAsyncReadyCallback)load_connection_status_secondary_ready,
+        ctx);
+
+    return G_SOURCE_REMOVE;
+}
+
+static void
+connect_secondary_ready (MMBaseBearer               *self,
+                         GAsyncResult               *res,
+                         SecondaryConnectionContext *ctx)
+{
+    GError *error = NULL;
+
+    /* NOTE: connect() implementations *MUST* handle cancellations themselves */
+    if (!MM_BASE_BEARER_GET_CLASS (self)->connect_secondary_finish (self, res, &error)) {
+        mm_warn ("Couldn't connect secondary connection context (#%u): %s", ctx->idx, error->message);
+        if (g_error_matches (error, MM_CORE_ERROR, MM_CORE_ERROR_CANCELLED) || g_error_matches (error, G_IO_ERROR, G_IO_ERROR_CANCELLED))
+            /* explicitly disconnect */
+            ctx->step = SECONDARY_CONNECTION_CONTEXT_STEP_DISCONNECT;
+        else
+            /* Retry connection after some time */
+            ctx->step = SECONDARY_CONNECTION_CONTEXT_STEP_TIMEOUT;
+        g_error_free (error);
+    }
+    /* Handle cancellations detected after successful connection */
+    else if (g_cancellable_is_cancelled (ctx->connect_cancellable)) {
+        mm_info ("Connected secondary connection context (#%u), but need to disconnect", ctx->idx);
+        /* explicitly disconnect */
+        ctx->step = SECONDARY_CONNECTION_CONTEXT_STEP_DISCONNECT;
+    }
+    else {
+        ctx->timeout_idx = 0;
+        ctx->timeout_n   = 0;
+        mm_info ("Connected secondary connection context (#%u)", ctx->idx);
+        ctx->step++;
+    }
+    g_clear_object (&ctx->connect_cancellable);
+
+    secondary_connection_context_step (ctx);
+}
+
+static gboolean
+timeout_secondary_ready (SecondaryConnectionContext *ctx)
+{
+    ctx->timeout_id = 0;
+    ctx->step++;
+    secondary_connection_context_step (ctx);
+    return G_SOURCE_REMOVE;
+}
+
+static void
+secondary_connection_context_step (SecondaryConnectionContext *ctx)
+{
+    /* We completely skip checking cancellable if we're going to disconnect, as
+     * disconnect may be part of the cancellation request (but only if the bearer
+     * object still exists) */
+    if (g_cancellable_is_cancelled (ctx->abort_cancellable)) {
+        if (ctx->step == SECONDARY_CONNECTION_CONTEXT_STEP_DISCONNECT)
+            mm_dbg ("Secondary connection context (#%u) aborted but need to disconnect first", ctx->idx);
+        else {
+            mm_dbg ("Secondary connection context (#%u) aborted", ctx->idx);
+            if (ctx->abort_callback)
+                ctx->abort_callback (ctx->abort_user_data);
+            secondary_connection_context_unref (ctx);
+            return;
+        }
+    }
+
+    switch (ctx->step) {
+    case SECONDARY_CONNECTION_CONTEXT_STEP_FIRST:
+        mm_dbg ("Secondary connection context (#%u) started", ctx->idx);
+        /* On the first time, jump to connection attempt directly */
+        ctx->step = SECONDARY_CONNECTION_CONTEXT_STEP_CONNECT;
+        secondary_connection_context_step (ctx);
+        return;
+
+    case SECONDARY_CONNECTION_CONTEXT_STEP_TIMEOUT:
+        g_assert (!ctx->timeout_id);
+        ctx->timeout_n++;
+        if (ctx->timeout_n == CONNECT_RETRY_ATTEMPTS) {
+            ctx->timeout_n = 0;
+            if (ctx->timeout_idx < (G_N_ELEMENTS (connect_retry_timeouts) - 1))
+                ctx->timeout_idx++;
+        }
+        g_assert (ctx->timeout_idx < G_N_ELEMENTS (connect_retry_timeouts));
+        g_assert (ctx->timeout_n < CONNECT_RETRY_ATTEMPTS);
+
+        mm_info ("Secondary connection context (#%u): %us before next connection attempt", ctx->idx, connect_retry_timeouts[ctx->timeout_idx]);
+        ctx->timeout_id = g_timeout_add_seconds (connect_retry_timeouts[ctx->timeout_idx], (GSourceFunc) timeout_secondary_ready, ctx);
+        return;
+
+    case SECONDARY_CONNECTION_CONTEXT_STEP_CONNECT:
+        g_assert (!ctx->connect_cancellable);
+        ctx->connect_cancellable = g_cancellable_new ();
+        MM_BASE_BEARER_GET_CLASS (ctx->self)->connect_secondary (ctx->self,
+                                                                 ctx->idx,
+                                                                 ctx->connect_cancellable,
+                                                                 (GAsyncReadyCallback)connect_secondary_ready,
+                                                                 ctx);
+        return;
+
+    case SECONDARY_CONNECTION_CONTEXT_STEP_MONITOR_INITIAL:
+        g_assert (!ctx->monitor_id);
+        ctx->monitor_id = g_timeout_add_seconds (BEARER_CONNECTION_MONITOR_INITIAL_TIMEOUT, (GSourceFunc) monitor_secondary_ready, ctx);
+        return;
+
+    case SECONDARY_CONNECTION_CONTEXT_STEP_MONITOR:
+        g_assert (!ctx->monitor_id);
+        ctx->monitor_id = g_timeout_add_seconds (BEARER_CONNECTION_MONITOR_TIMEOUT, (GSourceFunc) monitor_secondary_ready, ctx);
+        return;
+
+    case SECONDARY_CONNECTION_CONTEXT_STEP_DISCONNECT:
+        MM_BASE_BEARER_GET_CLASS (ctx->self)->disconnect_secondary (ctx->self,
+                                                                    ctx->idx,
+                                                                    (GAsyncReadyCallback)disconnect_secondary_ready,
+                                                                    ctx);
+        return;
+    }
+}
+
+static gboolean
+secondary_connection_context_abort_cb (SecondaryConnectionContext *ctx)
+{
+    /* Run step right away, it will abort there when checking the cancellable */
+    secondary_connection_context_step (ctx);
+    return G_SOURCE_REMOVE;
+}
+
+static void
+secondary_connection_context_abort (SecondaryConnectionContext *ctx,
+                                    gboolean                    may_disconnect,
+                                    GDestroyNotify              callback,
+                                    gpointer                    user_data)
+{
+    /* We always complete this operation asynchronously on purpose, so store
+     * callback and user data */
+    ctx->abort_callback  = callback;
+    ctx->abort_user_data = user_data;
+
+    /* If connecting, cancel the connection setup */
+    g_cancellable_cancel (ctx->connect_cancellable);
+
+    /* Explicitly stop */
+    g_cancellable_cancel (ctx->abort_cancellable);
+
+    /* If we're on a wait timeout, we reschedule right away and request DISCONNECT */
+    if (ctx->monitor_id || ctx->timeout_id) {
+        mm_dbg ("Secondary connection context (#%u) rescheduled to be aborted", ctx->idx);
+        if (ctx->monitor_id) {
+            g_source_remove (ctx->monitor_id);
+            ctx->monitor_id = 0;
+        }
+        if (ctx->timeout_id) {
+            g_source_remove (ctx->timeout_id);
+            ctx->timeout_id = 0;
+        }
+        if (may_disconnect)
+            ctx->step = SECONDARY_CONNECTION_CONTEXT_STEP_DISCONNECT;
+        g_idle_add ((GSourceFunc)secondary_connection_context_abort_cb, ctx);
+    }
+}
+
+/********************************************/
+/* Stop all secondary contexts */
+
+static gboolean
+secondary_connection_contexts_stop_finish (MMBaseBearer  *self,
+                                           GAsyncResult  *res,
+                                           GError       **error)
+{
+    return g_task_propagate_boolean (G_TASK (res), error);
+}
+
+static void secondary_connection_context_stop_next (GTask *task);
+
+static void
+secondary_connection_context_stop_next (GTask *task)
+{
+    MMBaseBearer               *self;
+    GPtrArray                  *contexts;
+    SecondaryConnectionContext *ctx;
+
+    self = g_task_get_source_object (task);
+    contexts = g_task_get_task_data (task);
+
+    if (contexts->len == 0) {
+        mm_dbg ("No more secondary connection contexts to stop");
+        g_task_return_boolean (task, TRUE);
+        g_object_unref (task);
+        return;
+    }
+
+    /* Stop and untrack */
+    ctx = g_ptr_array_index (contexts, 0);
+    mm_dbg ("Aborting secondary connection context (#%u)...", ctx->idx);
+    secondary_connection_context_abort (ctx, TRUE, (GDestroyNotify) secondary_connection_context_stop_next, task);
+    g_ptr_array_remove (contexts, ctx);
+}
+
+static void
+secondary_connection_contexts_stop (MMBaseBearer        *self,
+                                    GAsyncReadyCallback  callback,
+                                    gpointer             user_data)
+{
+    GTask *task;
+
+    task = g_task_new (self, NULL, callback, user_data);
+
+    if (!self->priv->secondary_connection_contexts) {
+        mm_dbg ("No secondary connection contexts scheduled to be stopped");
+        g_task_return_boolean (task, TRUE);
+        g_object_unref (task);
+        return;
+    }
+
+    mm_dbg ("Secondary connection contexts scheduled to be stopped: %u",
+            self->priv->secondary_connection_contexts->len);
+
+    /* Move the array of contexts to the task */
+    g_task_set_task_data (task, self->priv->secondary_connection_contexts, (GDestroyNotify) g_ptr_array_unref);
+    self->priv->secondary_connection_contexts = NULL;
+
+    secondary_connection_context_stop_next (task);
+}
+
+static void
+secondary_connection_contexts_stop_fast (MMBaseBearer *self)
+{
+    if (!self->priv->secondary_connection_contexts)
+        return;
+
+    while (self->priv->secondary_connection_contexts->len > 0) {
+        SecondaryConnectionContext *ctx;
+
+        /* Stop and untrack */
+        ctx = g_ptr_array_index (self->priv->secondary_connection_contexts, 0);
+        mm_dbg ("Stopping secondary connection context (#%u) (no wait)...", ctx->idx);
+        /* flag the self pointer as unusable before aborting */
+        ctx->self = NULL;
+        secondary_connection_context_abort (ctx, FALSE, NULL, NULL);
+        g_ptr_array_remove (self->priv->secondary_connection_contexts, ctx);
+    }
+
+    g_clear_pointer (&self->priv->secondary_connection_contexts, g_ptr_array_unref);
+}
+
+/********************************************/
+/* Start all secondary contexts */
+
+static void
+secondary_connection_contexts_start (MMBaseBearer *self)
+{
+    guint i, n_secondary;
+
+    if (!MM_BASE_BEARER_GET_CLASS (self)->connect_secondary || !MM_BASE_BEARER_GET_CLASS (self)->connect_secondary_finish ||
+        !MM_BASE_BEARER_GET_CLASS (self)->disconnect_secondary || !MM_BASE_BEARER_GET_CLASS (self)->disconnect_secondary_finish ||
+        !MM_BASE_BEARER_GET_CLASS (self)->load_connection_status_secondary || !MM_BASE_BEARER_GET_CLASS (self)->load_connection_status_secondary_finish) {
+        mm_dbg ("Secondary connection contexts unsupported");
+        return;
+    }
+
+    n_secondary = mm_bearer_properties_get_n_secondary (mm_base_bearer_peek_config (self));
+    if (n_secondary == 0) {
+        mm_dbg ("No secondary connection contexts defined");
+        return;
+    }
+
+    g_assert (!self->priv->secondary_connection_contexts);
+    self->priv->secondary_connection_contexts = g_ptr_array_new_full (n_secondary, (GDestroyNotify) secondary_connection_context_unref);
+
+    mm_dbg ("Secondary connection contexts defined: %u", n_secondary);
+    for (i = 0; i < n_secondary; i++) {
+        SecondaryConnectionContext *ctx;
+
+        ctx = g_slice_new0 (SecondaryConnectionContext);
+        ctx->ref_count = 1;
+        ctx->self = self;
+        ctx->idx  = i;
+        ctx->step = SECONDARY_CONNECTION_CONTEXT_STEP_FIRST;
+        ctx->abort_cancellable = g_cancellable_new ();
+
+        /* Track an extra reference and start */
+        g_ptr_array_add (self->priv->secondary_connection_contexts, secondary_connection_context_ref (ctx));
+        secondary_connection_context_step (ctx);
+    }
+}
+
+/*****************************************************************************/
 /* CONNECT */
 
 gboolean
@@ -737,6 +1162,9 @@ connect_ready (MMBaseBearer *self,
             mm_bearer_connect_result_peek_ipv4_config (result),
             mm_bearer_connect_result_peek_ipv6_config (result));
         mm_bearer_connect_result_unref (result);
+
+        /* Start all secondary contexts */
+        secondary_connection_contexts_start (self);
     }
 
     if (launch_disconnect) {
@@ -968,6 +1396,21 @@ status_changed_complete_disconnect (MMBaseBearer *self,
     g_object_unref (task);
 }
 
+static void
+secondary_connection_contexts_stop_ready (MMBaseBearer *self,
+                                          GAsyncResult *res,
+                                          GTask        *task)
+{
+    secondary_connection_contexts_stop_finish (self, res, NULL);
+
+    mm_dbg ("Launching bearer '%s' primary context disconnection",
+            self->priv->path);
+    MM_BASE_BEARER_GET_CLASS (self)->disconnect (
+        self,
+        (GAsyncReadyCallback)disconnect_ready,
+        task);
+}
+
 void
 mm_base_bearer_disconnect (MMBaseBearer *self,
                            GAsyncReadyCallback callback,
@@ -1022,10 +1465,11 @@ mm_base_bearer_disconnect (MMBaseBearer *self,
 
     /* Disconnecting! */
     bearer_update_status (self, MM_BEARER_STATUS_DISCONNECTING);
-    MM_BASE_BEARER_GET_CLASS (self)->disconnect (
-        self,
-        (GAsyncReadyCallback)disconnect_ready,
-        task); /* takes ownership */
+
+    /* Stop all secondary contexts before disconnecting the main one */
+    secondary_connection_contexts_stop (self,
+                                        (GAsyncReadyCallback)secondary_connection_contexts_stop_ready,
+                                        task);
 }
 
 typedef struct {
@@ -1198,6 +1642,18 @@ disconnect_force_ready (MMBaseBearer *self,
     mm_base_bearer_report_connection_status (self, MM_BEARER_CONNECTION_STATUS_DISCONNECTED);
 }
 
+static void
+secondary_connection_contexts_stop_force_ready (MMBaseBearer *self,
+                                                GAsyncResult *res)
+{
+    secondary_connection_contexts_stop_finish (self, res, NULL);
+
+    MM_BASE_BEARER_GET_CLASS (self)->disconnect (
+        self,
+        (GAsyncReadyCallback)disconnect_force_ready,
+        NULL);
+}
+
 void
 mm_base_bearer_disconnect_force (MMBaseBearer *self)
 {
@@ -1215,10 +1671,11 @@ mm_base_bearer_disconnect_force (MMBaseBearer *self)
 
     /* Disconnecting! */
     bearer_update_status (self, MM_BEARER_STATUS_DISCONNECTING);
-    MM_BASE_BEARER_GET_CLASS (self)->disconnect (
-        self,
-        (GAsyncReadyCallback)disconnect_force_ready,
-        NULL);
+
+    /* Stop all secondary contexts before disconnecting the main one */
+    secondary_connection_contexts_stop (self,
+                                        (GAsyncReadyCallback)secondary_connection_contexts_stop_force_ready,
+                                        NULL);
 }
 
 /*****************************************************************************/
@@ -1390,6 +1847,8 @@ static void
 dispose (GObject *object)
 {
     MMBaseBearer *self = MM_BASE_BEARER (object);
+
+    secondary_connection_contexts_stop_fast (self);
 
     connection_monitor_stop (self);
     bearer_stats_stop (self);

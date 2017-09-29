@@ -93,6 +93,15 @@ struct _MMBaseBearerClass {
                                                 GAsyncResult *res,
                                                 GError **error);
 
+    void (* connect_secondary) (MMBaseBearer *bearer,
+                                guint secondary_i,
+                                GCancellable *cancellable,
+                                GAsyncReadyCallback callback,
+                                gpointer user_data);
+    gboolean (* connect_secondary_finish) (MMBaseBearer *bearer,
+                                           GAsyncResult *res,
+                                           GError **error);
+
     /* Disconnect this bearer */
     void (* disconnect) (MMBaseBearer *bearer,
                          GAsyncReadyCallback callback,
@@ -100,6 +109,14 @@ struct _MMBaseBearerClass {
     gboolean (* disconnect_finish) (MMBaseBearer *bearer,
                                     GAsyncResult *res,
                                     GError **error);
+
+    void (* disconnect_secondary) (MMBaseBearer *bearer,
+                                   guint secondary_i,
+                                   GAsyncReadyCallback callback,
+                                   gpointer user_data);
+    gboolean (* disconnect_secondary_finish) (MMBaseBearer *bearer,
+                                              GAsyncResult *res,
+                                              GError **error);
 
     /* Monitor connection status:
      * NOTE: only CONNECTED or DISCONNECTED should be reported here; this method
@@ -111,6 +128,14 @@ struct _MMBaseBearerClass {
     MMBearerConnectionStatus (* load_connection_status_finish) (MMBaseBearer *bearer,
                                                                 GAsyncResult *res,
                                                                 GError **error);
+
+    void (* load_connection_status_secondary) (MMBaseBearer *bearer,
+                                               guint secondary_i,
+                                               GAsyncReadyCallback callback,
+                                               gpointer user_data);
+    MMBearerConnectionStatus (* load_connection_status_secondary_finish) (MMBaseBearer *bearer,
+                                                                          GAsyncResult *res,
+                                                                          GError **error);
 
     /* Reload statistics */
     void (* reload_stats) (MMBaseBearer *bearer,

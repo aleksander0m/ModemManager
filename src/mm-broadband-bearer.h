@@ -66,6 +66,8 @@ struct _MMBroadbandBearerClass {
     void  (* cid_selection_3gpp)        (MMBroadbandBearer *self,
                                          MMBaseModem *modem,
                                          MMPortSerialAt *primary,
+                                         const gchar *apn,
+                                         MMBearerIpFamily ip_family,
                                          GCancellable *cancellable,
                                          GAsyncReadyCallback callback,
                                          gpointer user_data);
@@ -84,6 +86,17 @@ struct _MMBroadbandBearerClass {
     MMPort * (* dial_3gpp_finish) (MMBroadbandBearer *self,
                                    GAsyncResult *res,
                                    GError **error);
+    void     (* dial_secondary_3gpp)        (MMBroadbandBearer *self,
+                                             MMBaseModem *modem,
+                                             MMPortSerialAt *primary,
+                                             guint cid,
+                                             guint secondary_i,
+                                             GCancellable *cancellable,
+                                             GAsyncReadyCallback callback,
+                                             gpointer user_data);
+    gboolean (* dial_secondary_3gpp_finish) (MMBroadbandBearer *self,
+                                             GAsyncResult *res,
+                                             GError **error);
 
     /* IP config retrieval sub-part of 3GPP connection.
      * Only really required when using net port + static IP address. */
@@ -151,6 +164,8 @@ void          mm_broadband_bearer_new        (MMBroadbandModem *modem,
 MMBaseBearer *mm_broadband_bearer_new_finish (GAsyncResult *res,
                                               GError **error);
 
-guint        mm_broadband_bearer_get_3gpp_cid (MMBroadbandBearer *self);
+guint        mm_broadband_bearer_get_3gpp_cid           (MMBroadbandBearer *self);
+guint        mm_broadband_bearer_get_3gpp_secondary_cid (MMBroadbandBearer *self,
+                                                         guint              i);
 
 #endif /* MM_BROADBAND_BEARER_H */

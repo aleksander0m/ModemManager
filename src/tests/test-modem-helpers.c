@@ -2479,6 +2479,109 @@ test_cgact_read_response_multiple (void)
 }
 
 /*****************************************************************************/
+/* Test CGPADDR exec responses */
+
+static void
+test_cgpaddr_exec_results (const gchar                   *desc,
+                           const gchar                   *reply,
+                           const MM3gppPdpContextAddress *expected_results,
+                           guint32                        expected_results_len)
+{
+    GList  *l;
+    GError *error = NULL;
+    GList  *results;
+
+    trace ("\nTesting %s +CGPADDR response...\n", desc);
+
+    results = mm_3gpp_parse_cgpaddr_exec_response (reply, &error);
+    g_assert_no_error (error);
+    if (expected_results_len) {
+        g_assert (results);
+        g_assert_cmpuint (g_list_length (results), ==, expected_results_len);
+    }
+
+    for (l = results; l; l = g_list_next (l)) {
+        MM3gppPdpContextAddress *pdp = l->data;
+        gboolean found = FALSE;
+        guint i;
+
+        for (i = 0; !found && i < expected_results_len; i++) {
+            const MM3gppPdpContextAddress *expected;
+
+            expected = &expected_results[i];
+            if (pdp->cid == expected->cid) {
+                found = TRUE;
+                g_assert_cmpstr (pdp->address, ==, expected->address);
+            }
+        }
+
+        g_assert (found == TRUE);
+    }
+
+    mm_3gpp_pdp_context_address_list_free (results);
+}
+
+static void
+test_cgpaddr_exec_response_none (void)
+{
+    test_cgpaddr_exec_results ("none", "", NULL, 0);
+}
+
+static void
+test_cgpaddr_exec_response_single_context_single_address (void)
+{
+    const gchar *reply = "+CGPADDR: 1,98.99.100.101\r\n";
+    static const MM3gppPdpContextAddress expected[] = {
+        { 1, "98.99.100.101" },
+    };
+
+    test_cgpaddr_exec_results ("single context, single address", reply, &expected[0], G_N_ELEMENTS (expected));
+}
+
+static void
+test_cgpaddr_exec_response_single_context_multiple_addresses (void)
+{
+    const gchar *reply = "+CGPADDR: 1,98.99.100.101,123.124.125.126\r\n";
+    static const MM3gppPdpContextAddress expected[] = {
+        { 1, "98.99.100.101" },
+    };
+
+    test_cgpaddr_exec_results ("single context, multiple addresses", reply, &expected[0], G_N_ELEMENTS (expected));
+}
+
+static void
+test_cgpaddr_exec_response_multiple_contexts_single_address (void)
+{
+    const gchar *reply =
+        "+CGPADDR: 1,98.99.100.101\r\n"
+        "+CGPADDR: 4,98.99.100.102\r\n"
+        "+CGPADDR: 5,98.99.100.103\r\n";
+    static MM3gppPdpContextAddress expected[] = {
+        { 1, "98.99.100.101" },
+        { 4, "98.99.100.102" },
+        { 5, "98.99.100.103" },
+    };
+
+    test_cgpaddr_exec_results ("multiple context, single address", reply, &expected[0], G_N_ELEMENTS (expected));
+}
+
+static void
+test_cgpaddr_exec_response_multiple_contexts_multiple_addresses (void)
+{
+    const gchar *reply =
+        "+CGPADDR: 1,98.99.100.101,123.124.125.126\r\n"
+        "+CGPADDR: 4,98.99.100.102\r\n"
+        "+CGPADDR: 5,98.99.100.103,123.124.125.127\r\n";
+    static MM3gppPdpContextAddress expected[] = {
+        { 1, "98.99.100.101" },
+        { 4, "98.99.100.102" },
+        { 5, "98.99.100.103" },
+    };
+
+    test_cgpaddr_exec_results ("multiple context, single address", reply, &expected[0], G_N_ELEMENTS (expected));
+}
+
+/*****************************************************************************/
 /* Test CPMS responses */
 
 static gboolean
@@ -3898,6 +4001,12 @@ int main (int argc, char **argv)
     g_test_suite_add (suite, TESTCASE (test_cgact_read_response_single_inactive, NULL));
     g_test_suite_add (suite, TESTCASE (test_cgact_read_response_single_active, NULL));
     g_test_suite_add (suite, TESTCASE (test_cgact_read_response_multiple, NULL));
+
+    g_test_suite_add (suite, TESTCASE (test_cgpaddr_exec_response_none, NULL));
+    g_test_suite_add (suite, TESTCASE (test_cgpaddr_exec_response_single_context_single_address, NULL));
+    g_test_suite_add (suite, TESTCASE (test_cgpaddr_exec_response_single_context_multiple_addresses, NULL));
+    g_test_suite_add (suite, TESTCASE (test_cgpaddr_exec_response_multiple_contexts_single_address, NULL));
+    g_test_suite_add (suite, TESTCASE (test_cgpaddr_exec_response_multiple_contexts_multiple_addresses, NULL));
 
     g_test_suite_add (suite, TESTCASE (test_cnum_response_generic, NULL));
     g_test_suite_add (suite, TESTCASE (test_cnum_response_generic_without_detail, NULL));

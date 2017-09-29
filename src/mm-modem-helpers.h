@@ -181,6 +181,15 @@ void mm_3gpp_pdp_context_active_list_free (GList *pdp_active_list);
 GList *mm_3gpp_parse_cgact_read_response (const gchar *reply,
                                           GError **error);
 
+/* AT+CGPADDR=<cid>[,<cid>[<cid>...]] response parser */
+typedef struct {
+    guint  cid;
+    gchar *address;
+} MM3gppPdpContextAddress;
+void mm_3gpp_pdp_context_address_list_free (GList *pdp_address_list);
+GList *mm_3gpp_parse_cgpaddr_exec_response (const gchar *reply,
+                                            GError **error);
+
 /* CREG/CGREG response/unsolicited message parser */
 gboolean mm_3gpp_parse_creg_response (GMatchInfo *info,
                                       MMModem3gppRegistrationState *out_reg_state,

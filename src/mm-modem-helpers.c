@@ -1593,6 +1593,91 @@ mm_3gpp_parse_cgact_read_response (const gchar *reply,
 
 /*************************************************************************/
 
+static void
+mm_3gpp_pdp_context_address_free (MM3gppPdpContextAddress *pdp_address)
+{
+    g_free (pdp_address->address);
+    g_slice_free (MM3gppPdpContextAddress, pdp_address);
+}
+
+void
+mm_3gpp_pdp_context_address_list_free (GList *pdp_address_list)
+{
+    g_list_free_full (pdp_address_list, (GDestroyNotify) mm_3gpp_pdp_context_address_free);
+}
+
+static gint
+mm_3gpp_pdp_context_address_cmp (MM3gppPdpContextAddress *a,
+                                 MM3gppPdpContextAddress *b)
+{
+    return (a->cid - b->cid);
+}
+
+GList *
+mm_3gpp_parse_cgpaddr_exec_response (const gchar  *reply,
+                                     GError      **error)
+{
+    GError *inner_error = NULL;
+    GRegex *r;
+    GMatchInfo *match_info;
+    GList *list = NULL;
+
+    if (!reply || !reply[0])
+        /* Nothing configured, all done */
+        return NULL;
+
+    /* Note: we may have more than one IP reported, we care only about the first one for now */
+    r = g_regex_new ("\\+CGPADDR:\\s*(\\d+),([^,\\r\\n]*)",
+                     G_REGEX_DOLLAR_ENDONLY | G_REGEX_RAW, 0, &inner_error);
+    g_assert (r);
+
+    g_regex_match_full (r, reply, strlen (reply), 0, 0, &match_info, &inner_error);
+    while (!inner_error && g_match_info_matches (match_info)) {
+        MM3gppPdpContextAddress *pdp_address;
+        guint cid = 0;
+        gchar *address;
+
+        if (!mm_get_uint_from_match_info (match_info, 1, &cid)) {
+            inner_error = g_error_new (MM_CORE_ERROR,
+                                       MM_CORE_ERROR_FAILED,
+                                       "Couldn't parse CID from reply: '%s'",
+                                       reply);
+            break;
+        }
+        if (!(address = mm_get_string_unquoted_from_match_info (match_info, 2))) {
+            inner_error = g_error_new (MM_CORE_ERROR,
+                                       MM_CORE_ERROR_FAILED,
+                                       "Couldn't parse address from reply: '%s'",
+                                       reply);
+            break;
+        }
+
+        pdp_address = g_slice_new0 (MM3gppPdpContextAddress);
+        pdp_address->cid = cid;
+        pdp_address->address = address;
+        list = g_list_prepend (list, pdp_address);
+
+        g_match_info_next (match_info, &inner_error);
+    }
+
+    if (match_info)
+        g_match_info_free (match_info);
+    g_regex_unref (r);
+
+    if (inner_error) {
+        mm_3gpp_pdp_context_address_list_free (list);
+        g_propagate_error (error, inner_error);
+        g_prefix_error (error, "Couldn't properly parse list of PDP context addresses. ");
+        return NULL;
+    }
+
+    list = g_list_sort (list, (GCompareFunc) mm_3gpp_pdp_context_address_cmp);
+
+    return list;
+}
+
+/*************************************************************************/
+
 static gulong
 parse_uint (char *str, int base, glong nmin, glong nmax, gboolean *valid)
 {

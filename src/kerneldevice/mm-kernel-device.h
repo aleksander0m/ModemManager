@@ -55,6 +55,8 @@ struct _MMKernelDeviceClass {
 
     guint16       (* get_physdev_pid) (MMKernelDevice *self);
 
+    const gchar * (* get_physdev_subsystem)    (MMKernelDevice *self);
+
     const gchar * (* get_physdev_manufacturer) (MMKernelDevice *self);
 
     gboolean      (* cmp) (MMKernelDevice *a, MMKernelDevice *b);
@@ -87,6 +89,7 @@ const gchar *mm_kernel_device_get_parent_sysfs_path  (MMKernelDevice *self);
 const gchar *mm_kernel_device_get_physdev_uid          (MMKernelDevice *self);
 guint16      mm_kernel_device_get_physdev_vid          (MMKernelDevice *self);
 guint16      mm_kernel_device_get_physdev_pid          (MMKernelDevice *self);
+const gchar *mm_kernel_device_get_physdev_subsystem    (MMKernelDevice *self);
 const gchar *mm_kernel_device_get_physdev_manufacturer (MMKernelDevice *self);
 
 gboolean     mm_kernel_device_cmp (MMKernelDevice *a, MMKernelDevice *b);

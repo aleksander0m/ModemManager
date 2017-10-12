@@ -384,6 +384,21 @@ kernel_device_get_physdev_pid (MMKernelDevice *_self)
 }
 
 static const gchar *
+kernel_device_get_physdev_subsystem (MMKernelDevice *_self)
+{
+    MMKernelDeviceUdev *self;
+
+    g_return_val_if_fail (MM_IS_KERNEL_DEVICE_UDEV (_self), NULL);
+
+    self = MM_KERNEL_DEVICE_UDEV (_self);
+    ensure_physdev (self);
+    if (!self->priv->physdev)
+        return NULL;
+
+    return g_udev_device_get_subsystem (self->priv->physdev);
+}
+
+static const gchar *
 kernel_device_get_physdev_manufacturer (MMKernelDevice *_self)
 {
     MMKernelDeviceUdev *self;
@@ -477,7 +492,7 @@ kernel_device_is_candidate (MMKernelDevice *_self,
     }
 
     /* If the physdev is a 'platform' or 'pnp' device that's not whitelisted, ignore it */
-    physdev_subsys = g_udev_device_get_subsystem (self->priv->physdev);
+    physdev_subsys = mm_kernel_device_get_physdev_subsystem (MM_KERNEL_DEVICE (self));
     if ((!g_strcmp0 (physdev_subsys, "platform") || !g_strcmp0 (physdev_subsys, "pnp")) &&
         (!mm_kernel_device_get_global_property_as_boolean (MM_KERNEL_DEVICE (self), "ID_MM_PLATFORM_DRIVER_PROBE"))) {
         mm_dbg ("(%s/%s): port's parent platform driver is not whitelisted", subsys, name);
@@ -879,6 +894,7 @@ mm_kernel_device_udev_class_init (MMKernelDeviceUdevClass *klass)
     kernel_device_class->get_physdev_uid                = kernel_device_get_physdev_uid;
     kernel_device_class->get_physdev_vid                = kernel_device_get_physdev_vid;
     kernel_device_class->get_physdev_pid                = kernel_device_get_physdev_pid;
+    kernel_device_class->get_physdev_subsystem          = kernel_device_get_physdev_subsystem;
     kernel_device_class->get_physdev_manufacturer       = kernel_device_get_physdev_manufacturer;
     kernel_device_class->get_parent_sysfs_path          = kernel_device_get_parent_sysfs_path;
     kernel_device_class->is_candidate                   = kernel_device_is_candidate;

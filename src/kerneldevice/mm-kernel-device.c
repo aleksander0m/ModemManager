@@ -90,6 +90,16 @@ mm_kernel_device_get_physdev_pid (MMKernelDevice *self)
 }
 
 const gchar *
+mm_kernel_device_get_physdev_subsystem (MMKernelDevice *self)
+{
+    g_return_val_if_fail (MM_IS_KERNEL_DEVICE (self), NULL);
+
+    return (MM_KERNEL_DEVICE_GET_CLASS (self)->get_physdev_subsystem ?
+            MM_KERNEL_DEVICE_GET_CLASS (self)->get_physdev_subsystem (self) :
+            NULL);
+}
+
+const gchar *
 mm_kernel_device_get_physdev_manufacturer (MMKernelDevice *self)
 {
     g_return_val_if_fail (MM_IS_KERNEL_DEVICE (self), NULL);

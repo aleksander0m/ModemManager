@@ -49,10 +49,9 @@ typedef enum { /*< underscore_name=mm_filter_rule >*/
     MM_FILTER_RULE_NET                  = 1 << 1,
     MM_FILTER_RULE_CDC_WDM              = 1 << 2,
     MM_FILTER_RULE_TTY                  = 1 << 3,
-    MM_FILTER_RULE_TTY_VIRTUAL_CONSOLE  = 1 << 4,
-    MM_FILTER_RULE_TTY_BLACKLIST        = 1 << 5,
-    MM_FILTER_RULE_TTY_MANUAL_SCAN_ONLY = 1 << 6,
-    MM_FILTER_RULE_TTY_PLATFORM_DRIVER  = 1 << 7,
+    MM_FILTER_RULE_TTY_BLACKLIST        = 1 << 4,
+    MM_FILTER_RULE_TTY_MANUAL_SCAN_ONLY = 1 << 5,
+    MM_FILTER_RULE_TTY_PLATFORM_DRIVER  = 1 << 6,
 } MMFilterRule;
 
 MMFilter *mm_filter_new (MMFilterRule enabled_rules);

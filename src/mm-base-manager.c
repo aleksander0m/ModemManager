@@ -1131,7 +1131,6 @@ initable_init (GInitable *initable,
                                   MM_FILTER_RULE_NET                  |
                                   MM_FILTER_RULE_CDC_WDM              |
                                   MM_FILTER_RULE_TTY                  |
-                                  MM_FILTER_RULE_TTY_VIRTUAL_CONSOLE  |
                                   MM_FILTER_RULE_TTY_BLACKLIST        |
                                   MM_FILTER_RULE_TTY_MANUAL_SCAN_ONLY |
                                   MM_FILTER_RULE_TTY_PLATFORM_DRIVER);

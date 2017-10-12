@@ -72,14 +72,6 @@ mm_filter_port (MMFilter        *self,
         (g_strcmp0 (subsystem, "tty") == 0)) {
         const gchar *physdev_subsystem;
 
-        /* Filter out virtual consoles (e.g. tty0, tty1, tty2...) */
-        if ((self->priv->enabled_rules & MM_FILTER_RULE_TTY_VIRTUAL_CONSOLE) &&
-            (name && strncmp (name, "tty", 3) == 0) &&
-            (g_ascii_isdigit (name[3]))) {
-            mm_dbg ("[filter] (%s/%s) port filtered: virtual console", subsystem, name);
-            return FALSE;
-        }
-
         /* Ignore blacklisted tty devices. */
         if ((self->priv->enabled_rules & MM_FILTER_RULE_TTY_BLACKLIST) &&
             (mm_kernel_device_get_global_property_as_boolean (port, "ID_MM_DEVICE_IGNORE"))) {
@@ -132,10 +124,9 @@ mm_filter_new (MMFilterRule enabled_rules)
     mm_dbg ("[filter]   cdc-wdm devices allowed:    %s", RULE_ENABLED_STR (MM_FILTER_RULE_CDC_WDM));
     mm_dbg ("[filter]   tty devices allowed:        %s", RULE_ENABLED_STR (MM_FILTER_RULE_TTY));
     if (self->priv->enabled_rules & MM_FILTER_RULE_TTY) {
-        mm_dbg ("[filter]       virtual consoles filtered: %s", RULE_ENABLED_STR (MM_FILTER_RULE_TTY_VIRTUAL_CONSOLE));
-        mm_dbg ("[filter]       blacklist applied:         %s", RULE_ENABLED_STR (MM_FILTER_RULE_TTY_BLACKLIST));
-        mm_dbg ("[filter]       manual scan only applied:  %s", RULE_ENABLED_STR (MM_FILTER_RULE_TTY_MANUAL_SCAN_ONLY));
-        mm_dbg ("[filter]       platform driver check:     %s", RULE_ENABLED_STR (MM_FILTER_RULE_TTY_PLATFORM_DRIVER));
+        mm_dbg ("[filter]       blacklist applied:        %s", RULE_ENABLED_STR (MM_FILTER_RULE_TTY_BLACKLIST));
+        mm_dbg ("[filter]       manual scan only applied: %s", RULE_ENABLED_STR (MM_FILTER_RULE_TTY_MANUAL_SCAN_ONLY));
+        mm_dbg ("[filter]       platform driver check:    %s", RULE_ENABLED_STR (MM_FILTER_RULE_TTY_PLATFORM_DRIVER));
     }
 
 #undef RULE_ENABLED_STR

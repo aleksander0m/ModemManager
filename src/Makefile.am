@@ -128,6 +128,7 @@ endif
 BUILT_SOURCES += $(HELPER_ENUMS_GENERATED)
 CLEANFILES    += $(HELPER_ENUMS_GENERATED)
 
+
 ################################################################################
 # kerneldevice library
 ################################################################################
@@ -236,6 +237,7 @@ CLEANFILES    += $(PORT_ENUMS_GENERATED)
 sbin_PROGRAMS += ModemManager
 
 DAEMON_ENUMS_INPUTS = \
+	$(srcdir)/mm-filter.h \
 	$(srcdir)/mm-base-bearer.h \
 	$(srcdir)/mm-port-probe.h  \
 	$(NULL)
@@ -247,7 +249,7 @@ DAEMON_ENUMS_GENERATED = \
 
 mm-daemon-enums-types.h: Makefile.am $(DAEMON_ENUMS_INPUTS) $(top_srcdir)/build-aux/mm-enums-template.h
 	$(AM_V_GEN) $(GLIB_MKENUMS) \
-		--fhead "#include \"mm-base-bearer.h\"\n#include \"mm-port-probe.h\"\n#ifndef __MM_DAEMON_ENUMS_TYPES_H__\n#define __MM_DAEMON_ENUMS_TYPES_H__\n" \
+		--fhead "#include \"mm-filter.h\"\n#include \"mm-base-bearer.h\"\n#include \"mm-port-probe.h\"\n#ifndef __MM_DAEMON_ENUMS_TYPES_H__\n#define __MM_DAEMON_ENUMS_TYPES_H__\n" \
 		--template $(top_srcdir)/build-aux/mm-enums-template.h \
 		--ftail "#endif /* __MM_DAEMON_ENUMS_TYPES_H__ */\n" \
 		$(DAEMON_ENUMS_INPUTS) > $@
@@ -286,6 +288,8 @@ ModemManager_SOURCES = \
 	mm-auth.c \
 	mm-auth-provider.h \
 	mm-auth-provider.c \
+	mm-filter.h \
+	mm-filter.c \
 	mm-base-manager.c \
 	mm-base-manager.h \
 	mm-device.c \

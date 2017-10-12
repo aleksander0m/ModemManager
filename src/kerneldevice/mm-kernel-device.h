@@ -80,9 +80,6 @@ const gchar *mm_kernel_device_get_name        (MMKernelDevice *self);
 const gchar *mm_kernel_device_get_driver      (MMKernelDevice *self);
 const gchar *mm_kernel_device_get_sysfs_path  (MMKernelDevice *self);
 
-gboolean     mm_kernel_device_is_candidate    (MMKernelDevice *self,
-                                               gboolean        manual_scan);
-
 const gchar *mm_kernel_device_get_parent_sysfs_path  (MMKernelDevice *self);
 
 const gchar *mm_kernel_device_get_physdev_uid          (MMKernelDevice *self);

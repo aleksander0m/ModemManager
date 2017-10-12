@@ -39,6 +39,7 @@
 #include "mm-plugin-manager.h"
 #include "mm-auth.h"
 #include "mm-plugin.h"
+#include "mm-filter.h"
 #include "mm-log.h"
 
 static void initable_iface_init (GInitableIface *iface);
@@ -73,6 +74,8 @@ struct _MMBaseManagerPrivate {
     GCancellable *authp_cancellable;
     /* The Plugin Manager object */
     MMPluginManager *plugin_manager;
+    /* The port/device filter */
+    MMFilter *filter;
     /* The container of devices being prepared */
     GHashTable *devices;
     /* The Object Manager server */
@@ -286,7 +289,16 @@ device_added (MMBaseManager  *manager,
             mm_kernel_device_get_name (port),
             mm_kernel_device_get_sysfs_path (port));
 
-    if (!mm_kernel_device_is_candidate (port, manual_scan)) {
+    /* Ignore devices that aren't completely configured by udev yet.  If
+     * ModemManager is started in parallel with udev, explicitly requesting
+     * devices may return devices for which not all udev rules have yet been
+     * applied (a bug in udev/gudev).  Since we often need those rules to match
+     * the device to a specific ModemManager driver, we need to ensure that all
+     * rules have been processed before handling a device.
+     *
+     * This udev tag applies to each port in a device. In other words, the flag
+     * may be set in some ports, but not in others */
+    if (!mm_kernel_device_get_property_as_boolean (port, "ID_MM_CANDIDATE")) {
         /* This could mean that device changed, losing its ID_MM_CANDIDATE
          * flags (such as Bluetooth RFCOMM devices upon disconnect.
          * Try to forget it. */
@@ -296,6 +308,10 @@ device_added (MMBaseManager  *manager,
                 mm_kernel_device_get_name (port));
         return;
     }
+
+    /* Run port filter */
+    if (!mm_filter_port (manager->priv->filter, port, manual_scan))
+        return;
 
     /* If already added, ignore new event */
     if (find_device_by_port (manager, port)) {
@@ -1110,6 +1126,16 @@ initable_init (GInitable *initable,
         g_signal_connect (priv->udev, "uevent", G_CALLBACK (handle_uevent), initable);
 #endif
 
+    /* Create filter */
+    priv->filter = mm_filter_new (MM_FILTER_RULE_VIRTUAL              |
+                                  MM_FILTER_RULE_NET                  |
+                                  MM_FILTER_RULE_CDC_WDM              |
+                                  MM_FILTER_RULE_TTY                  |
+                                  MM_FILTER_RULE_TTY_VIRTUAL_CONSOLE  |
+                                  MM_FILTER_RULE_TTY_BLACKLIST        |
+                                  MM_FILTER_RULE_TTY_MANUAL_SCAN_ONLY |
+                                  MM_FILTER_RULE_TTY_PLATFORM_DRIVER);
+
     /* Create plugin manager */
     priv->plugin_manager = mm_plugin_manager_new (priv->plugin_dir, error);
     if (!priv->plugin_manager)
@@ -1158,6 +1184,9 @@ finalize (GObject *object)
     if (priv->udev)
         g_object_unref (priv->udev);
 #endif
+
+    if (priv->filter)
+        g_object_unref (priv->filter);
 
     if (priv->plugin_manager)
         g_object_unref (priv->plugin_manager);

@@ -13,6 +13,10 @@
  * Copyright (C) 2016 Velocloud, Inc.
  */
 
+#include <config.h>
+#include <string.h>
+
+#include "mm-log.h"
 #include "mm-kernel-device.h"
 
 G_DEFINE_ABSTRACT_TYPE (MMKernelDevice, mm_kernel_device, G_TYPE_OBJECT)
@@ -123,11 +127,67 @@ gboolean
 mm_kernel_device_is_candidate (MMKernelDevice *self,
                                gboolean        manual_scan)
 {
+    const gchar *physdev_subsys;
+    const gchar *name;
+    const gchar *subsys;
+
     g_return_val_if_fail (MM_IS_KERNEL_DEVICE (self), FALSE);
 
-    return (MM_KERNEL_DEVICE_GET_CLASS (self)->is_candidate ?
-            MM_KERNEL_DEVICE_GET_CLASS (self)->is_candidate (self, manual_scan) :
-            FALSE);
+    name   = mm_kernel_device_get_name      (self);
+    subsys = mm_kernel_device_get_subsystem (self);
+
+    /* ignore VTs */
+    if (strncmp (name, "tty", 3) == 0 && g_ascii_isdigit (name[3]))
+        return FALSE;
+
+    /* Ignore devices that aren't completely configured by udev yet.  If
+     * ModemManager is started in parallel with udev, explicitly requesting
+     * devices may return devices for which not all udev rules have yet been
+     * applied (a bug in udev/gudev).  Since we often need those rules to match
+     * the device to a specific ModemManager driver, we need to ensure that all
+     * rules have been processed before handling a device.
+     *
+     * This udev tag applies to each port in a device. In other words, the flag
+     * may be set in some ports, but not in others */
+    if (!mm_kernel_device_get_property_as_boolean (self, "ID_MM_CANDIDATE"))
+        return FALSE;
+
+    /* Don't process device if no sysfs path */
+    if (!mm_kernel_device_get_physdev_sysfs_path (self)) {
+        /* Log about it, but filter out some common ports that we know don't have
+         * anything to do with mobile broadband.
+         */
+        if (   strcmp (name, "console")
+            && strcmp (name, "ptmx")
+            && strcmp (name, "lo")
+            && strcmp (name, "tty")
+            && !strstr (name, "virbr"))
+            mm_dbg ("(%s/%s): could not get port's parent device", subsys, name);
+        return FALSE;
+    }
+
+    /* Ignore blacklisted devices. */
+    if (mm_kernel_device_get_global_property_as_boolean (MM_KERNEL_DEVICE (self), "ID_MM_DEVICE_IGNORE")) {
+        mm_dbg ("(%s/%s): device is blacklisted", subsys, name);
+        return FALSE;
+    }
+
+    /* Is the device in the manual-only greylist? If so, return if this is an
+     * automatic scan. */
+    if (!manual_scan && mm_kernel_device_get_global_property_as_boolean (MM_KERNEL_DEVICE (self), "ID_MM_DEVICE_MANUAL_SCAN_ONLY")) {
+        mm_dbg ("(%s/%s): device probed only in manual scan", subsys, name);
+        return FALSE;
+    }
+
+    /* If the physdev is a 'platform' or 'pnp' device that's not whitelisted, ignore it */
+    physdev_subsys = mm_kernel_device_get_physdev_subsystem (MM_KERNEL_DEVICE (self));
+    if ((!g_strcmp0 (physdev_subsys, "platform") || !g_strcmp0 (physdev_subsys, "pnp")) &&
+        (!mm_kernel_device_get_global_property_as_boolean (MM_KERNEL_DEVICE (self), "ID_MM_PLATFORM_DRIVER_PROBE"))) {
+        mm_dbg ("(%s/%s): port's parent platform driver is not whitelisted", subsys, name);
+        return FALSE;
+    }
+
+    return TRUE;
 }
 
 const gchar *

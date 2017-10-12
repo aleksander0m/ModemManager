@@ -44,9 +44,6 @@ struct _MMKernelDeviceClass {
 
     const gchar * (* get_sysfs_path)  (MMKernelDevice *self);
 
-    gboolean      (* is_candidate)    (MMKernelDevice *self,
-                                       gboolean        manual_scan);
-
     const gchar * (* get_parent_sysfs_path) (MMKernelDevice *self);
 
     const gchar * (* get_physdev_uid) (MMKernelDevice *self);

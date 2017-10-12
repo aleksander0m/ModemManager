@@ -522,59 +522,6 @@ kernel_device_get_physdev_manufacturer (MMKernelDevice *self)
 }
 
 static gboolean
-kernel_device_is_candidate (MMKernelDevice *_self,
-                            gboolean        manual_scan)
-{
-    MMKernelDeviceGeneric *self;
-    const gchar           *name;
-
-    g_return_val_if_fail (MM_IS_KERNEL_DEVICE_GENERIC (_self), FALSE);
-
-    self = MM_KERNEL_DEVICE_GENERIC (_self);
-
-    name = mm_kernel_event_properties_get_name (self->priv->properties);
-
-    /* ignore VTs */
-    if (strncmp (name, "tty", 3) == 0 && g_ascii_isdigit (name[3])) {
-        mm_dbg ("(%s/%s) VT ignored",
-                mm_kernel_event_properties_get_subsystem (self->priv->properties),
-                mm_kernel_event_properties_get_name      (self->priv->properties));
-        return FALSE;
-    }
-
-    /* only ports tagged as candidate */
-    if (!mm_kernel_device_get_property_as_boolean (_self, "ID_MM_CANDIDATE")) {
-        mm_dbg ("(%s/%s) device not flagged with ID_MM_CANDIDATE",
-                mm_kernel_event_properties_get_subsystem (self->priv->properties),
-                mm_kernel_event_properties_get_name      (self->priv->properties));
-        return FALSE;
-    }
-
-    /* no devices without physical device */
-    if (!self->priv->physdev_sysfs_path) {
-        mm_dbg ("(%s/%s) device without physdev sysfs path",
-                mm_kernel_event_properties_get_subsystem (self->priv->properties),
-                mm_kernel_event_properties_get_name      (self->priv->properties));
-        return FALSE;
-    }
-
-    /* ignore ports explicitly ignored; note that in this case the property
-     * is set in this kernel device itself, unlike in the udev backend, that
-     * goes in the parent udev device */
-    if (mm_kernel_device_get_property_as_boolean (_self, "ID_MM_DEVICE_IGNORE")) {
-        mm_dbg ("(%s/%s) device flagged with ID_MM_DEVICE_IGNORE",
-                mm_kernel_event_properties_get_subsystem (self->priv->properties),
-                mm_kernel_event_properties_get_name      (self->priv->properties));
-        return FALSE;
-    }
-
-    mm_dbg ("(%s/%s) device is candidate",
-            mm_kernel_event_properties_get_subsystem (self->priv->properties),
-            mm_kernel_event_properties_get_name      (self->priv->properties));
-    return TRUE;
-}
-
-static gboolean
 kernel_device_cmp (MMKernelDevice *a,
                    MMKernelDevice *b)
 {
@@ -1111,7 +1058,6 @@ mm_kernel_device_generic_class_init (MMKernelDeviceGenericClass *klass)
     kernel_device_class->get_physdev_subsystem    = kernel_device_get_physdev_subsystem;
     kernel_device_class->get_physdev_manufacturer = kernel_device_get_physdev_manufacturer;
     kernel_device_class->get_parent_sysfs_path    = kernel_device_get_parent_sysfs_path;
-    kernel_device_class->is_candidate             = kernel_device_is_candidate;
     kernel_device_class->cmp                      = kernel_device_cmp;
     kernel_device_class->has_property             = kernel_device_has_property;
     kernel_device_class->get_property             = kernel_device_get_property;

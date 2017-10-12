@@ -498,6 +498,14 @@ kernel_device_get_physdev_pid (MMKernelDevice *self)
 }
 
 static const gchar *
+kernel_device_get_physdev_sysfs_path (MMKernelDevice *self)
+{
+    g_return_val_if_fail (MM_IS_KERNEL_DEVICE_GENERIC (self), 0);
+
+    return MM_KERNEL_DEVICE_GENERIC (self)->priv->physdev_sysfs_path;
+}
+
+static const gchar *
 kernel_device_get_physdev_subsystem (MMKernelDevice *self)
 {
     g_return_val_if_fail (MM_IS_KERNEL_DEVICE_GENERIC (self), NULL);
@@ -1099,6 +1107,7 @@ mm_kernel_device_generic_class_init (MMKernelDeviceGenericClass *klass)
     kernel_device_class->get_physdev_uid          = kernel_device_get_physdev_uid;
     kernel_device_class->get_physdev_vid          = kernel_device_get_physdev_vid;
     kernel_device_class->get_physdev_pid          = kernel_device_get_physdev_pid;
+    kernel_device_class->get_physdev_sysfs_path   = kernel_device_get_physdev_sysfs_path;
     kernel_device_class->get_physdev_subsystem    = kernel_device_get_physdev_subsystem;
     kernel_device_class->get_physdev_manufacturer = kernel_device_get_physdev_manufacturer;
     kernel_device_class->get_parent_sysfs_path    = kernel_device_get_parent_sysfs_path;

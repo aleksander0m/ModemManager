@@ -106,6 +106,43 @@ mm_filter_port (MMFilter        *self,
 }
 
 /*****************************************************************************/
+/* Use filter rule names as environment variables to control them on startup:
+ *  - MM_FILTER_RULE_XXX=1 to explicitly enable the rule.
+ *  - MM_FILTER_RULE_XXX=0 to explicitly disable the rule.
+ */
+
+static MMFilterRule
+filter_rule_env_process (MMFilterRule enabled_rules)
+{
+    MMFilterRule  updated_rules = enabled_rules;
+    GFlagsClass  *flags_class;
+    guint         i;
+
+    flags_class = g_type_class_ref (MM_TYPE_FILTER_RULE);
+
+    for (i = 0; (1 << i) & MM_FILTER_RULE_ALL; i++) {
+        GFlagsValue *flags_value;
+        const gchar *env_value;
+
+        flags_value = g_flags_get_first_value (flags_class, (1 << i));
+        g_assert (flags_value);
+
+        env_value = g_getenv (flags_value->value_name);
+        if (!env_value)
+            continue;
+
+        if (g_str_equal (env_value, "0"))
+            updated_rules &= ~(1 << i);
+        else if (g_str_equal (env_value, "1"))
+            updated_rules |= (1 << i);
+    }
+
+    g_type_class_unref (flags_class);
+
+    return updated_rules;
+}
+
+/*****************************************************************************/
 
 MMFilter *
 mm_filter_new (MMFilterRule enabled_rules)
@@ -113,7 +150,7 @@ mm_filter_new (MMFilterRule enabled_rules)
     MMFilter *self;
 
     self = g_object_new (MM_TYPE_FILTER,
-                         MM_FILTER_ENABLED_RULES, enabled_rules,
+                         MM_FILTER_ENABLED_RULES, filter_rule_env_process (enabled_rules),
                          NULL);
 
 #define RULE_ENABLED_STR(flag) ((self->priv->enabled_rules & flag) ? "yes" : "no")

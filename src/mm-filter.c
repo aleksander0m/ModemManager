@@ -45,6 +45,16 @@ mm_filter_port (MMFilter        *self,
     subsystem = mm_kernel_device_get_subsystem (port);
     name      = mm_kernel_device_get_name      (port);
 
+    /* If the device is explicitly whitelisted, we process every port. Also
+     * allow specifying this flag per-port instead of for the full device, e.g.
+     * for platform tty ports where there's only one port anyway. */
+    if ((self->priv->enabled_rules & MM_FILTER_RULE_EXPLICIT_WHITELIST) &&
+        (mm_kernel_device_get_global_property_as_boolean (port, "ID_MM_DEVICE_PROCESS") ||
+         mm_kernel_device_get_property_as_boolean (port, "ID_MM_DEVICE_PROCESS"))) {
+        mm_dbg ("[filter] (%s/%s) port allowed: device is whitelisted", subsystem, name);
+        return TRUE;
+    }
+
     /* If this is a virtual device, don't allow it */
     if ((self->priv->enabled_rules & MM_FILTER_RULE_VIRTUAL) &&
         (!mm_kernel_device_get_physdev_sysfs_path (port))) {
@@ -156,6 +166,7 @@ mm_filter_new (MMFilterRule enabled_rules)
 #define RULE_ENABLED_STR(flag) ((self->priv->enabled_rules & flag) ? "yes" : "no")
 
     mm_dbg ("[filter] created");
+    mm_dbg ("[filter]   explicit whitelist:         %s", RULE_ENABLED_STR (MM_FILTER_RULE_EXPLICIT_WHITELIST));
     mm_dbg ("[filter]   virtual devices forbidden:  %s", RULE_ENABLED_STR (MM_FILTER_RULE_VIRTUAL));
     mm_dbg ("[filter]   net devices allowed:        %s", RULE_ENABLED_STR (MM_FILTER_RULE_NET));
     mm_dbg ("[filter]   cdc-wdm devices allowed:    %s", RULE_ENABLED_STR (MM_FILTER_RULE_CDC_WDM));

@@ -950,7 +950,10 @@ noinst_PROGRAMS += test-modem-helpers-ublox
 test_modem_helpers_ublox_SOURCES = \
 	ublox/tests/test-modem-helpers-ublox.c \
 	$(NULL)
-test_modem_helpers_ublox_CPPFLAGS = $(PLUGIN_UBLOX_COMPILER_FLAGS)
+test_modem_helpers_ublox_CPPFLAGS = \
+	$(PLUGIN_UBLOX_COMPILER_FLAGS) \
+	-DUBLOX_TESTS_DIR=\""$(abs_top_srcdir)/plugins/ublox/tests/"\" \
+	$(NULL)
 test_modem_helpers_ublox_LDADD = \
 	$(builddir)/libhelpers-ublox.la \
 	$(top_builddir)/src/libhelpers.la \

@@ -80,7 +80,7 @@ typedef struct {
 static void
 common_connect_context_free (CommonConnectContext *ctx)
 {
-    g_list_free_full (ctx->apn_destinations, g_free);
+    g_list_free_full (ctx->apn_destinations, (GDestroyNotify) mm_ublox_apn_destination_free);
     g_free (ctx->unquoted_apn);
     g_free (ctx->address);
     if (ctx->ip_config)
@@ -381,9 +381,9 @@ uiproute_add_destination_ready (MMBaseModem  *modem,
 static void
 uiproute_add_destination (GTask *task)
 {
-    CommonConnectContext *ctx;
-    gchar                *cmd;
-    gchar                *next_destination;
+    CommonConnectContext  *ctx;
+    gchar                 *cmd;
+    MMUbloxApnDestination *next_destination;
 
     ctx = (CommonConnectContext *) g_task_get_task_data (task);
 
@@ -395,11 +395,18 @@ uiproute_add_destination (GTask *task)
     next_destination = ctx->apn_destinations->data;
     ctx->apn_destinations = g_list_delete_link (ctx->apn_destinations, ctx->apn_destinations);
 
-    /* Add destination route */
-    mm_dbg ("Adding default route for destination %s...", next_destination);
     g_assert (ctx->cid >= 1);
-    cmd = g_strdup_printf ("+UIPROUTE=\"add -host %s gw %s netmask 0.0.0.0 dev inm%u\"",
-                           next_destination, ctx->address, ctx->cid - 1);
+
+    /* Add route */
+    if (next_destination->netmask) {
+        mm_dbg ("Adding default route for network %s/%s...", next_destination->address, next_destination->netmask);
+        cmd = g_strdup_printf ("+UIPROUTE=\"add -net %s gw %s netmask %s dev inm%u\"",
+                               next_destination->address, ctx->address, next_destination->netmask, ctx->cid - 1);
+    } else {
+        mm_dbg ("Adding default route for host %s...", next_destination->address);
+        cmd = g_strdup_printf ("+UIPROUTE=\"add -host %s gw %s dev inm%u\"",
+                               next_destination->address, ctx->address, ctx->cid - 1);
+    }
     mm_base_modem_at_command (MM_BASE_MODEM (ctx->modem),
                               cmd,
                               10,
@@ -407,7 +414,7 @@ uiproute_add_destination (GTask *task)
                               (GAsyncReadyCallback) uiproute_add_destination_ready,
                               task);
     g_free (cmd);
-    g_free (next_destination);
+    mm_ublox_apn_destination_free (next_destination);
 }
 
 static void
@@ -553,7 +560,7 @@ cgact_activate_ready (MMBaseModem  *modem,
         return;
     }
 
-    ctx->apn_destinations = mm_ublox_get_apn_destinations (ctx->unquoted_apn, &error);
+    ctx->apn_destinations = mm_ublox_get_apn_destinations (NULL, ctx->unquoted_apn, &error);
     if (error) {
         g_task_return_error (task, error);
         g_object_unref (task);

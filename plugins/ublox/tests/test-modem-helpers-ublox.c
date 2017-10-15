@@ -1101,6 +1101,50 @@ test_uiproute_response (void)
 }
 
 /*****************************************************************************/
+/* Test destinations */
+
+#if !defined UBLOX_TESTS_DIR
+# error UBLOX_TESTS_DIR is not defined
+#endif
+
+static const MMUbloxApnDestination expected_destinations[] = {
+    { "1.2.3.4",     NULL            },
+    { "192.168.1.2", NULL            },
+    { "10.10.10.10", "255.0.0.0"     },
+    { "5.5.5.0",     "255.255.255.0" },
+};
+
+static void
+test_destinations (void)
+{
+    GList  *destinations;
+    GError *error = NULL;
+    guint   i;
+
+    destinations = mm_ublox_get_apn_destinations (UBLOX_TESTS_DIR, "test-apn-routes", &error);
+    g_assert_no_error (error);
+    g_assert_cmpuint (g_list_length (destinations), ==, G_N_ELEMENTS (expected_destinations));
+
+    for (i = 0; i < G_N_ELEMENTS (expected_destinations); i++) {
+        GList *l;
+
+        for (l = destinations; l; l = g_list_next (l)) {
+            MMUbloxApnDestination *destination;
+
+            destination = (MMUbloxApnDestination *)(l->data);
+            if (g_str_equal (destination->address, expected_destinations[i].address)) {
+                if (destination->netmask)
+                    g_assert (g_str_equal (destination->netmask, expected_destinations[i].netmask));
+                else
+                    g_assert (!expected_destinations[i].netmask);
+                break;
+            }
+        }
+        g_assert (l);
+    }
+}
+
+/*****************************************************************************/
 
 void
 _mm_log (const char *loc,
@@ -1169,6 +1213,7 @@ int main (int argc, char **argv)
     g_test_add_func ("/MM/ublox/uauthreq/test/less-fields", test_uauthreq_less_fields);
     g_test_add_func ("/MM/ublox/ugcntrd/response", test_ugcntrd_response);
     g_test_add_func ("/MM/ublox/uiproute/response", test_uiproute_response);
+    g_test_add_func ("/MM/ublox/destinations", test_destinations);
 
     return g_test_run ();
 }

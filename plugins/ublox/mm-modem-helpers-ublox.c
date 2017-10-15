@@ -1568,8 +1568,17 @@ mm_ublox_parse_uiproute_response_find_default_route_for_ipaddr (const gchar  *re
 # define MM_UBLOX_APN_DESTINATIONS_EXT ".route"
 #endif
 
+void
+mm_ublox_apn_destination_free (MMUbloxApnDestination *destination)
+{
+    g_free (destination->address);
+    g_free (destination->netmask);
+    g_slice_free (MMUbloxApnDestination, destination);
+}
+
 GList *
-mm_ublox_get_apn_destinations (const gchar  *apn,
+mm_ublox_get_apn_destinations (const gchar  *basedir,
+                               const gchar  *apn,
                                GError      **error)
 {
     gchar  *filepath;
@@ -1578,7 +1587,7 @@ mm_ublox_get_apn_destinations (const gchar  *apn,
     gchar **split = NULL;
     guint   i;
 
-    filepath = g_strdup_printf ("%s%s%s", MM_UBLOX_APN_DESTINATIONS_DIR, apn, MM_UBLOX_APN_DESTINATIONS_EXT);
+    filepath = g_strdup_printf ("%s%s%s", basedir ? basedir : MM_UBLOX_APN_DESTINATIONS_DIR, apn, MM_UBLOX_APN_DESTINATIONS_EXT);
 
     /* If file doesn't exist, log about it and return no destinations */
     if (!g_file_test (filepath, G_FILE_TEST_EXISTS)) {
@@ -1595,9 +1604,26 @@ mm_ublox_get_apn_destinations (const gchar  *apn,
 
     for (i = 0; split[i]; i++) {
         g_strstrip (split[i]);
-        if (split[i][0]) {
-            mm_dbg ("APN destination found: '%s'", split[i]);
-            destinations = g_list_append (destinations, g_strdup (split[i]));
+        if (split[i][0] && split[i][0] != '#') {
+            MMUbloxApnDestination  *destination;
+            gchar                 **split_line;
+
+            destination = g_slice_new0 (MMUbloxApnDestination);
+
+            split_line = g_strsplit (split[i], ",", -1);
+            g_strstrip (split_line[0]);
+            destination->address = g_strdup (split_line[0]);
+            if (split_line[1] && split_line[1][0]) {
+                g_strstrip (split_line[1]);
+                if (!g_str_equal (split_line[1], "255.255.255.255"))
+                    destination->netmask = g_strdup (split_line[1]);
+            }
+
+            mm_dbg ("APN destination found: target '%s', netmask '%s'",
+                    destination->address, destination->netmask ? destination->netmask : "n/a");
+            destinations = g_list_append (destinations, destination);
+
+            g_strfreev (split_line);
         }
     }
 

@@ -1,0 +1,10 @@
+
+# Target host without explicit netmask
+1.2.3.4
+
+# Target host with netmask
+192.168.1.2, 255.255.255.255
+
+# Target subnets
+10.10.10.10, 255.0.0.0
+5.5.5.0,     255.255.255.0

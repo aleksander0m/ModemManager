@@ -182,7 +182,14 @@ gboolean mm_ublox_parse_uiproute_response_find_default_route_for_ipaddr (const g
 /*****************************************************************************/
 /* APN destinations configuration */
 
-GList *mm_ublox_get_apn_destinations (const gchar  *apn,
-                                      GError      **error);
+typedef struct {
+    gchar *address;
+    gchar *netmask;
+} MMUbloxApnDestination;
+
+void   mm_ublox_apn_destination_free (MMUbloxApnDestination  *destination);
+GList *mm_ublox_get_apn_destinations (const gchar            *basedir,
+                                      const gchar            *apn,
+                                      GError                **error);
 
 #endif  /* MM_MODEM_HELPERS_UBLOX_H */

@@ -100,10 +100,13 @@ mm_filter_port (MMFilter        *self,
         /* If the physdev is a 'platform' or 'pnp' device that's not whitelisted, ignore it */
         physdev_subsystem = mm_kernel_device_get_physdev_subsystem (port);
         if ((self->priv->enabled_rules & MM_FILTER_RULE_TTY_PLATFORM_DRIVER) &&
-            (!g_strcmp0 (physdev_subsystem, "platform") || !g_strcmp0 (physdev_subsystem, "pnp")) &&
-            (!mm_kernel_device_get_global_property_as_boolean (port, "ID_MM_PLATFORM_DRIVER_PROBE"))) {
-            mm_dbg ("[filter] (%s/%s): port filtered: port's parent platform driver is not whitelisted", subsystem, name);
-            return FALSE;
+            (!g_strcmp0 (physdev_subsystem, "platform") || !g_strcmp0 (physdev_subsystem, "pnp"))) {
+            if (!mm_kernel_device_get_global_property_as_boolean (port, "ID_MM_PLATFORM_DRIVER_PROBE")) {
+                mm_dbg ("[filter] (%s/%s): port filtered: port's parent platform driver is not whitelisted", subsystem, name);
+                return FALSE;
+            }
+            mm_dbg ("[filter] (%s/%s): port allowed: port's parent platform driver is whitelisted", subsystem, name);
+            return TRUE;
         }
 
         /* Otherwise, TTY probed */

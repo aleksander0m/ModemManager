@@ -65,6 +65,22 @@ typedef enum { /*< underscore_name=mm_filter_rule >*/
      MM_FILTER_RULE_TTY_MANUAL_SCAN_ONLY | \
      MM_FILTER_RULE_TTY_PLATFORM_DRIVER)
 
+/* This is the default ModemManager policy that tries to automatically probe
+ * device ports unless they're blacklisted in some way or another. */
+#define MM_FILTER_POLICY_DEFAULT           \
+    (MM_FILTER_RULE_EXPLICIT_WHITELIST   | \
+     MM_FILTER_RULE_VIRTUAL              | \
+     MM_FILTER_RULE_NET                  | \
+     MM_FILTER_RULE_CDC_WDM              | \
+     MM_FILTER_RULE_TTY                  | \
+     MM_FILTER_RULE_TTY_BLACKLIST        | \
+     MM_FILTER_RULE_TTY_MANUAL_SCAN_ONLY | \
+     MM_FILTER_RULE_TTY_PLATFORM_DRIVER)
+
+/* This policy only allows using device ports explicitly whitelisted via
+ * udev rules. i.e. ModemManager won't do any kind of automatic probing. */
+#define MM_FILTER_POLICY_WHITELIST_ONLY MM_FILTER_RULE_EXPLICIT_WHITELIST
+
 MMFilter *mm_filter_new (MMFilterRule enabled_rules);
 
 gboolean mm_filter_port (MMFilter        *self,

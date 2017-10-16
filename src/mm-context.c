@@ -16,6 +16,10 @@
 #include <config.h>
 #include <stdlib.h>
 
+#include <ModemManager.h>
+#define _LIBMM_INSIDE_MM
+#include <libmm-glib.h>
+
 #include "mm-context.h"
 
 /*****************************************************************************/
@@ -31,13 +35,41 @@
 # define NO_AUTO_SCAN_DEFAULT     TRUE
 #endif
 
-static gboolean     help_flag;
-static gboolean     version_flag;
-static gboolean     debug;
-static gboolean     no_auto_scan = NO_AUTO_SCAN_DEFAULT;
-static const gchar *initial_kernel_events;
+static gboolean      help_flag;
+static gboolean      version_flag;
+static gboolean      debug;
+static MMFilterRule  filter_policy = MM_FILTER_POLICY_DEFAULT;
+static gboolean      no_auto_scan = NO_AUTO_SCAN_DEFAULT;
+static const gchar  *initial_kernel_events;
+
+static gboolean
+filter_policy_option_arg (const gchar  *option_name,
+                          const gchar  *value,
+                          gpointer      data,
+                          GError      **error)
+{
+    if (!g_ascii_strcasecmp (value, "default")) {
+        filter_policy = MM_FILTER_POLICY_DEFAULT;
+        return TRUE;
+    }
+
+    if (!g_ascii_strcasecmp (value, "whitelist-only")) {
+        filter_policy = MM_FILTER_POLICY_WHITELIST_ONLY;
+        return TRUE;
+    }
+
+    g_set_error (error, MM_CORE_ERROR, MM_CORE_ERROR_FAILED,
+                 "Invalid filter policy value given: %s",
+                 value);
+    return FALSE;
+}
 
 static const GOptionEntry entries[] = {
+    {
+        "filter-policy", 0, 0, G_OPTION_ARG_CALLBACK, filter_policy_option_arg,
+        "Filter policy: one of DEFAULT, WHITELIST-ONLY",
+        "[POLICY]"
+    },
     {
         "no-auto-scan", 0, NO_AUTO_SCAN_OPTION_FLAG, G_OPTION_ARG_NONE, &no_auto_scan,
         "Don't auto-scan looking for devices",
@@ -82,6 +114,12 @@ gboolean
 mm_context_get_no_auto_scan (void)
 {
     return no_auto_scan;
+}
+
+MMFilterRule
+mm_context_get_filter_policy (void)
+{
+    return filter_policy;
 }
 
 /*****************************************************************************/

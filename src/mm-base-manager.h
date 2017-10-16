@@ -21,6 +21,7 @@
 #include <glib-object.h>
 #include <gio/gio.h>
 
+#include "mm-filter.h"
 #include "mm-gdbus-manager.h"
 
 #define MM_TYPE_BASE_MANAGER            (mm_base_manager_get_type ())
@@ -30,10 +31,11 @@
 #define MM_IS_BASE_MANAGER_CLASS(klass) (G_TYPE_CHECK_CLASS_TYPE ((obj), MM_TYPE_BASE_MANAGER))
 #define MM_BASE_MANAGER_GET_CLASS(obj)  (G_TYPE_INSTANCE_GET_CLASS ((obj), MM_TYPE_BASE_MANAGER, MMBaseManagerClass))
 
-#define MM_BASE_MANAGER_CONNECTION  "connection"  /* Construct-only */
-#define MM_BASE_MANAGER_AUTO_SCAN   "auto-scan"   /* Construct-only */
-#define MM_BASE_MANAGER_ENABLE_TEST "enable-test" /* Construct-only */
-#define MM_BASE_MANAGER_PLUGIN_DIR  "plugin-dir"  /* Construct-only */
+#define MM_BASE_MANAGER_CONNECTION            "connection"            /* Construct-only */
+#define MM_BASE_MANAGER_AUTO_SCAN             "auto-scan"             /* Construct-only */
+#define MM_BASE_MANAGER_FILTER_POLICY         "filter-policy"         /* Construct-only */
+#define MM_BASE_MANAGER_ENABLE_TEST           "enable-test"           /* Construct-only */
+#define MM_BASE_MANAGER_PLUGIN_DIR            "plugin-dir"            /* Construct-only */
 #define MM_BASE_MANAGER_INITIAL_KERNEL_EVENTS "initial-kernel-events" /* Construct-only */
 
 typedef struct _MMBaseManagerPrivate MMBaseManagerPrivate;
@@ -49,12 +51,13 @@ typedef struct {
 
 GType mm_base_manager_get_type (void);
 
-MMBaseManager   *mm_base_manager_new         (GDBusConnection *bus,
-                                              const gchar *plugin_dir,
-                                              gboolean auto_scan,
-                                              const gchar *initial_kernel_events,
-                                              gboolean enable_test,
-                                              GError **error);
+MMBaseManager   *mm_base_manager_new         (GDBusConnection  *bus,
+                                              const gchar      *plugin_dir,
+                                              gboolean          auto_scan,
+                                              MMFilterRule      filter_policy,
+                                              const gchar      *initial_kernel_events,
+                                              gboolean          enable_test,
+                                              GError          **error);
 
 void             mm_base_manager_start       (MMBaseManager *manager,
                                               gboolean manual_scan);

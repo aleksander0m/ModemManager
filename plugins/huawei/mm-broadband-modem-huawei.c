@@ -2200,7 +2200,7 @@ peek_port_at_for_data (MMBroadbandModemHuawei *self,
     MMPortSerialAt *found = NULL;
 
     g_warn_if_fail (mm_port_get_subsys (port) == MM_PORT_SUBSYS_NET);
-    net_port_parent_path = mm_kernel_device_get_parent_sysfs_path (mm_port_peek_kernel_device (port));
+    net_port_parent_path = mm_kernel_device_get_interface_sysfs_path (mm_port_peek_kernel_device (port));
     if (!net_port_parent_path) {
         mm_warn ("(%s) no parent path for net port", mm_port_get_device (port));
         return NULL;
@@ -2215,7 +2215,7 @@ peek_port_at_for_data (MMBroadbandModemHuawei *self,
         const gchar  *wdm_port_parent_path;
 
         g_assert (MM_IS_PORT_SERIAL_AT (l->data));
-        wdm_port_parent_path = mm_kernel_device_get_parent_sysfs_path (mm_port_peek_kernel_device (MM_PORT (l->data)));
+        wdm_port_parent_path = mm_kernel_device_get_interface_sysfs_path (mm_port_peek_kernel_device (MM_PORT (l->data)));
         if (wdm_port_parent_path && g_str_equal (wdm_port_parent_path, net_port_parent_path))
             found = MM_PORT_SERIAL_AT (l->data);
     }

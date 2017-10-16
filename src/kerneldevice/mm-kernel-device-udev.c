@@ -242,6 +242,17 @@ ensure_physdev (MMKernelDeviceUdev *self)
 
 /*****************************************************************************/
 
+static void
+ensure_parent (MMKernelDeviceUdev *self)
+{
+    if (self->priv->parent)
+        return;
+    if (self->priv->device)
+        self->priv->parent = g_udev_device_get_parent (self->priv->device);
+}
+
+/*****************************************************************************/
+
 static const gchar *
 kernel_device_get_subsystem (MMKernelDevice *_self)
 {
@@ -428,17 +439,51 @@ kernel_device_get_physdev_manufacturer (MMKernelDevice *_self)
     return g_udev_device_get_sysfs_attr (self->priv->physdev, "manufacturer");
 }
 
-static const gchar *
-kernel_device_get_parent_sysfs_path (MMKernelDevice *_self)
+static gint
+kernel_device_get_interface_class (MMKernelDevice *_self)
 {
     MMKernelDeviceUdev *self;
 
-    g_return_val_if_fail (MM_IS_KERNEL_DEVICE_UDEV (_self), 0);
+    g_return_val_if_fail (MM_IS_KERNEL_DEVICE_UDEV (_self), -1);
 
     self = MM_KERNEL_DEVICE_UDEV (_self);
+    ensure_parent (self);
+    return (self->priv->parent ? g_udev_device_get_sysfs_attr_as_int (self->priv->parent, "bInterfaceClass") : -1);
+}
 
-    if (!self->priv->parent && self->priv->device)
-        self->priv->parent = g_udev_device_get_parent (self->priv->device);
+static gint
+kernel_device_get_interface_subclass (MMKernelDevice *_self)
+{
+    MMKernelDeviceUdev *self;
+
+    g_return_val_if_fail (MM_IS_KERNEL_DEVICE_UDEV (_self), -1);
+
+    self = MM_KERNEL_DEVICE_UDEV (_self);
+    ensure_parent (self);
+    return (self->priv->parent ? g_udev_device_get_sysfs_attr_as_int (self->priv->parent, "bInterfaceSubClass") : -1);
+}
+
+static gint
+kernel_device_get_interface_protocol (MMKernelDevice *_self)
+{
+    MMKernelDeviceUdev *self;
+
+    g_return_val_if_fail (MM_IS_KERNEL_DEVICE_UDEV (_self), -1);
+
+    self = MM_KERNEL_DEVICE_UDEV (_self);
+    ensure_parent (self);
+    return (self->priv->parent ? g_udev_device_get_sysfs_attr_as_int (self->priv->parent, "bInterfaceProtocol") : -1);
+}
+
+static const gchar *
+kernel_device_get_interface_sysfs_path (MMKernelDevice *_self)
+{
+    MMKernelDeviceUdev *self;
+
+    g_return_val_if_fail (MM_IS_KERNEL_DEVICE_UDEV (_self), NULL);
+
+    self = MM_KERNEL_DEVICE_UDEV (_self);
+    ensure_parent (self);
     return (self->priv->parent ? g_udev_device_get_sysfs_path (self->priv->parent) : NULL);
 }
 
@@ -837,7 +882,10 @@ mm_kernel_device_udev_class_init (MMKernelDeviceUdevClass *klass)
     kernel_device_class->get_physdev_sysfs_path         = kernel_device_get_physdev_sysfs_path;
     kernel_device_class->get_physdev_subsystem          = kernel_device_get_physdev_subsystem;
     kernel_device_class->get_physdev_manufacturer       = kernel_device_get_physdev_manufacturer;
-    kernel_device_class->get_parent_sysfs_path          = kernel_device_get_parent_sysfs_path;
+    kernel_device_class->get_interface_class            = kernel_device_get_interface_class;
+    kernel_device_class->get_interface_subclass         = kernel_device_get_interface_subclass;
+    kernel_device_class->get_interface_protocol         = kernel_device_get_interface_protocol;
+    kernel_device_class->get_interface_sysfs_path       = kernel_device_get_interface_sysfs_path;
     kernel_device_class->cmp                            = kernel_device_cmp;
     kernel_device_class->has_property                   = kernel_device_has_property;
     kernel_device_class->get_property                   = kernel_device_get_property;

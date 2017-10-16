@@ -87,7 +87,6 @@ MMKernelDevice *mm_port_probe_peek_port       (MMPortProbe *self);
 MMKernelDevice *mm_port_probe_get_port        (MMPortProbe *self);
 const gchar    *mm_port_probe_get_port_name   (MMPortProbe *self);
 const gchar    *mm_port_probe_get_port_subsys (MMPortProbe *self);
-const gchar    *mm_port_probe_get_parent_path (MMPortProbe *self);
 
 /* Probing result setters */
 void mm_port_probe_set_result_at         (MMPortProbe *self,

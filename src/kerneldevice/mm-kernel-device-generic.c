@@ -442,8 +442,32 @@ kernel_device_get_sysfs_path (MMKernelDevice *self)
     return MM_KERNEL_DEVICE_GENERIC (self)->priv->sysfs_path;
 }
 
+static gint
+kernel_device_get_interface_class (MMKernelDevice *self)
+{
+    g_return_val_if_fail (MM_IS_KERNEL_DEVICE_GENERIC (self), -1);
+
+    return (gint) MM_KERNEL_DEVICE_GENERIC (self)->priv->interface_class;
+}
+
+static gint
+kernel_device_get_interface_subclass (MMKernelDevice *self)
+{
+    g_return_val_if_fail (MM_IS_KERNEL_DEVICE_GENERIC (self), -1);
+
+    return (gint) MM_KERNEL_DEVICE_GENERIC (self)->priv->interface_subclass;
+}
+
+static gint
+kernel_device_get_interface_protocol (MMKernelDevice *self)
+{
+    g_return_val_if_fail (MM_IS_KERNEL_DEVICE_GENERIC (self), -1);
+
+    return (gint) MM_KERNEL_DEVICE_GENERIC (self)->priv->interface_protocol;
+}
+
 static const gchar *
-kernel_device_get_parent_sysfs_path (MMKernelDevice *self)
+kernel_device_get_interface_sysfs_path (MMKernelDevice *self)
 {
     g_return_val_if_fail (MM_IS_KERNEL_DEVICE_GENERIC (self), NULL);
 
@@ -1057,7 +1081,10 @@ mm_kernel_device_generic_class_init (MMKernelDeviceGenericClass *klass)
     kernel_device_class->get_physdev_sysfs_path   = kernel_device_get_physdev_sysfs_path;
     kernel_device_class->get_physdev_subsystem    = kernel_device_get_physdev_subsystem;
     kernel_device_class->get_physdev_manufacturer = kernel_device_get_physdev_manufacturer;
-    kernel_device_class->get_parent_sysfs_path    = kernel_device_get_parent_sysfs_path;
+    kernel_device_class->get_interface_class      = kernel_device_get_interface_class;
+    kernel_device_class->get_interface_subclass   = kernel_device_get_interface_subclass;
+    kernel_device_class->get_interface_protocol   = kernel_device_get_interface_protocol;
+    kernel_device_class->get_interface_sysfs_path = kernel_device_get_interface_sysfs_path;
     kernel_device_class->cmp                      = kernel_device_cmp;
     kernel_device_class->has_property             = kernel_device_has_property;
     kernel_device_class->get_property             = kernel_device_get_property;

@@ -566,7 +566,7 @@ mm_base_modem_peek_port_qmi_for_data (MMBaseModem *self,
     MMPortQmi *found = NULL;
 
     g_warn_if_fail (mm_port_get_subsys (data) == MM_PORT_SUBSYS_NET);
-    net_port_parent_path = mm_kernel_device_get_parent_sysfs_path (mm_port_peek_kernel_device (data));
+    net_port_parent_path = mm_kernel_device_get_interface_sysfs_path (mm_port_peek_kernel_device (data));
     if (!net_port_parent_path) {
         g_set_error (error,
                      MM_CORE_ERROR,
@@ -585,7 +585,7 @@ mm_base_modem_peek_port_qmi_for_data (MMBaseModem *self,
         const gchar *wdm_port_parent_path;
 
         g_assert (MM_IS_PORT_QMI (l->data));
-        wdm_port_parent_path = mm_kernel_device_get_parent_sysfs_path (mm_port_peek_kernel_device (MM_PORT (l->data)));
+        wdm_port_parent_path = mm_kernel_device_get_interface_sysfs_path (mm_port_peek_kernel_device (MM_PORT (l->data)));
         if (wdm_port_parent_path && g_str_equal (wdm_port_parent_path, net_port_parent_path))
             found = MM_PORT_QMI (l->data);
     }
@@ -645,7 +645,7 @@ mm_base_modem_peek_port_mbim_for_data (MMBaseModem *self,
     MMPortMbim *found = NULL;
 
     g_warn_if_fail (mm_port_get_subsys (data) == MM_PORT_SUBSYS_NET);
-    net_port_parent_path = mm_kernel_device_get_parent_sysfs_path (mm_port_peek_kernel_device (data));
+    net_port_parent_path = mm_kernel_device_get_interface_sysfs_path (mm_port_peek_kernel_device (data));
     if (!net_port_parent_path) {
         g_set_error (error,
                      MM_CORE_ERROR,
@@ -665,7 +665,7 @@ mm_base_modem_peek_port_mbim_for_data (MMBaseModem *self,
         const gchar *wdm_port_parent_path;
 
         g_assert (MM_IS_PORT_MBIM (l->data));
-        wdm_port_parent_path = mm_kernel_device_get_parent_sysfs_path (mm_port_peek_kernel_device (MM_PORT (l->data)));
+        wdm_port_parent_path = mm_kernel_device_get_interface_sysfs_path (mm_port_peek_kernel_device (MM_PORT (l->data)));
         if (wdm_port_parent_path && g_str_equal (wdm_port_parent_path, net_port_parent_path))
             found = MM_PORT_MBIM (l->data);
     }

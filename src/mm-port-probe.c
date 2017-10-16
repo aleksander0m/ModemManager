@@ -1711,14 +1711,6 @@ mm_port_probe_get_port_subsys (MMPortProbe *self)
     return mm_kernel_device_get_subsystem (self->priv->port);
 }
 
-const gchar *
-mm_port_probe_get_parent_path (MMPortProbe *self)
-{
-    g_return_val_if_fail (MM_IS_PORT_PROBE (self), NULL);
-
-    return mm_kernel_device_get_parent_sysfs_path (self->priv->port);
-}
-
 /*****************************************************************************/
 
 MMPortProbe *

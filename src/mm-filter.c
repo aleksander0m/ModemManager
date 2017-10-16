@@ -81,6 +81,9 @@ mm_filter_port (MMFilter        *self,
     if ((self->priv->enabled_rules & MM_FILTER_RULE_TTY) &&
         (g_strcmp0 (subsystem, "tty") == 0)) {
         const gchar *physdev_subsystem;
+        const gchar *driver;
+
+        /* Blacklist rules first */
 
         /* Ignore blacklisted tty devices. */
         if ((self->priv->enabled_rules & MM_FILTER_RULE_TTY_BLACKLIST) &&
@@ -97,6 +100,8 @@ mm_filter_port (MMFilter        *self,
             return FALSE;
         }
 
+        /* Mixed blacklist/whitelist rules */
+
         /* If the physdev is a 'platform' or 'pnp' device that's not whitelisted, ignore it */
         physdev_subsystem = mm_kernel_device_get_physdev_subsystem (port);
         if ((self->priv->enabled_rules & MM_FILTER_RULE_TTY_PLATFORM_DRIVER) &&
@@ -109,8 +114,41 @@ mm_filter_port (MMFilter        *self,
             return TRUE;
         }
 
-        /* Otherwise, TTY probed */
-        return TRUE;
+        /* Default allowed? */
+        if (self->priv->enabled_rules & MM_FILTER_RULE_TTY_DEFAULT_ALLOWED) {
+            mm_dbg ("[filter] (%s/%s) port allowed", subsystem, name);
+            return TRUE;
+        }
+
+        /* Whitelist rules last */
+
+        /* If the TTY kernel driver is one expected modem kernel driver, allow it */
+        driver = mm_kernel_device_get_driver (port);
+        if ((self->priv->enabled_rules & MM_FILTER_RULE_TTY_DRIVER) &&
+            (!g_strcmp0 (driver, "option") ||
+             !g_strcmp0 (driver, "qcserial") ||
+             !g_strcmp0 (driver, "sierra"))) {
+            mm_dbg ("[filter] (%s/%s): port allowed: modem-specific kernel driver detected", subsystem, name);
+            return TRUE;
+        }
+
+        /* If the TTY kernel driver is cdc-acm and the interface is class=2/subclass=2/protocol=1, allow it */
+        if ((self->priv->enabled_rules & MM_FILTER_RULE_TTY_ACM_INTERFACE) &&
+            (!g_strcmp0 (driver, "cdc_acm")) &&
+            (mm_kernel_device_get_interface_class (port) == 2) &&
+            (mm_kernel_device_get_interface_subclass (port) == 2) &&
+            (mm_kernel_device_get_interface_protocol (port) == 1)) {
+            mm_dbg ("[filter] (%s/%s): port allowed: cdc-acm interface reported AT-capable", subsystem, name);
+            return TRUE;
+        }
+
+        /* Default forbidden? */
+        if (self->priv->enabled_rules & MM_FILTER_RULE_TTY_DEFAULT_FORBIDDEN) {
+            mm_dbg ("[filter] (%s/%s) port forbidden", subsystem, name);
+            return FALSE;
+        }
+
+        g_assert_not_reached ();
     }
 
     /* Otherwise forbidden */
@@ -157,13 +195,30 @@ filter_rule_env_process (MMFilterRule enabled_rules)
 
 /*****************************************************************************/
 
+/* If TTY rule enabled, either DEFAULT_ALLOWED or DEFAULT_FORBIDDEN must be set. */
+#define VALIDATE_RULE_TTY(rules) (!(rules & MM_FILTER_RULE_TTY) || \
+                                  ((rules & (MM_FILTER_RULE_TTY_DEFAULT_ALLOWED | MM_FILTER_RULE_TTY_DEFAULT_FORBIDDEN)) && \
+                                   ((rules & (MM_FILTER_RULE_TTY_DEFAULT_ALLOWED | MM_FILTER_RULE_TTY_DEFAULT_FORBIDDEN)) != \
+                                    (MM_FILTER_RULE_TTY_DEFAULT_ALLOWED | MM_FILTER_RULE_TTY_DEFAULT_FORBIDDEN))))
+
 MMFilter *
-mm_filter_new (MMFilterRule enabled_rules)
+mm_filter_new (MMFilterRule   enabled_rules,
+               GError       **error)
 {
-    MMFilter *self;
+    MMFilter     *self;
+    MMFilterRule  updated_rules;
+
+    /* The input enabled rules are coming from predefined filter profiles. */
+    g_assert (VALIDATE_RULE_TTY (enabled_rules));
+    updated_rules = filter_rule_env_process (enabled_rules);
+    if (!VALIDATE_RULE_TTY (updated_rules)) {
+        g_set_error (error, MM_CORE_ERROR, MM_CORE_ERROR_INVALID_ARGS,
+                     "Invalid rules after processing envvars");
+        return NULL;
+    }
 
     self = g_object_new (MM_TYPE_FILTER,
-                         MM_FILTER_ENABLED_RULES, filter_rule_env_process (enabled_rules),
+                         MM_FILTER_ENABLED_RULES, updated_rules,
                          NULL);
 
 #define RULE_ENABLED_STR(flag) ((self->priv->enabled_rules & flag) ? "yes" : "no")
@@ -173,12 +228,21 @@ mm_filter_new (MMFilterRule enabled_rules)
     mm_dbg ("[filter]   virtual devices forbidden:  %s", RULE_ENABLED_STR (MM_FILTER_RULE_VIRTUAL));
     mm_dbg ("[filter]   net devices allowed:        %s", RULE_ENABLED_STR (MM_FILTER_RULE_NET));
     mm_dbg ("[filter]   cdc-wdm devices allowed:    %s", RULE_ENABLED_STR (MM_FILTER_RULE_CDC_WDM));
-    mm_dbg ("[filter]   tty devices allowed:        %s", RULE_ENABLED_STR (MM_FILTER_RULE_TTY));
     if (self->priv->enabled_rules & MM_FILTER_RULE_TTY) {
+        mm_dbg ("[filter]   tty devices:");
         mm_dbg ("[filter]       blacklist applied:        %s", RULE_ENABLED_STR (MM_FILTER_RULE_TTY_BLACKLIST));
         mm_dbg ("[filter]       manual scan only applied: %s", RULE_ENABLED_STR (MM_FILTER_RULE_TTY_MANUAL_SCAN_ONLY));
         mm_dbg ("[filter]       platform driver check:    %s", RULE_ENABLED_STR (MM_FILTER_RULE_TTY_PLATFORM_DRIVER));
-    }
+        mm_dbg ("[filter]       driver check:             %s", RULE_ENABLED_STR (MM_FILTER_RULE_TTY_DRIVER));
+        mm_dbg ("[filter]       cdc-acm interface check:  %s", RULE_ENABLED_STR (MM_FILTER_RULE_TTY_ACM_INTERFACE));
+        if (self->priv->enabled_rules & MM_FILTER_RULE_TTY_DEFAULT_ALLOWED)
+            mm_dbg ("[filter]       default:                  allowed");
+        else if (self->priv->enabled_rules & MM_FILTER_RULE_TTY_DEFAULT_FORBIDDEN)
+            mm_dbg ("[filter]       default:                  forbidden");
+        else
+            g_assert_not_reached ();
+    } else
+        mm_dbg ("[filter]   tty devices:                no");
 
 #undef RULE_ENABLED_STR
 

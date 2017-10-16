@@ -1139,7 +1139,9 @@ initable_init (GInitable *initable,
 #endif
 
     /* Create filter */
-    priv->filter = mm_filter_new (priv->filter_policy);
+    priv->filter = mm_filter_new (priv->filter_policy, error);
+    if (!priv->filter)
+        return FALSE;
 
     /* Create plugin manager */
     priv->plugin_manager = mm_plugin_manager_new (priv->plugin_dir, error);

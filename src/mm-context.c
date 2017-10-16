@@ -58,6 +58,16 @@ filter_policy_option_arg (const gchar  *option_name,
         return TRUE;
     }
 
+    if (!g_ascii_strcasecmp (value, "strict")) {
+        filter_policy = MM_FILTER_POLICY_STRICT;
+        return TRUE;
+    }
+
+    if (!g_ascii_strcasecmp (value, "paranoid")) {
+        filter_policy = MM_FILTER_POLICY_PARANOID;
+        return TRUE;
+    }
+
     g_set_error (error, MM_CORE_ERROR, MM_CORE_ERROR_FAILED,
                  "Invalid filter policy value given: %s",
                  value);
@@ -67,7 +77,7 @@ filter_policy_option_arg (const gchar  *option_name,
 static const GOptionEntry entries[] = {
     {
         "filter-policy", 0, 0, G_OPTION_ARG_CALLBACK, filter_policy_option_arg,
-        "Filter policy: one of DEFAULT, WHITELIST-ONLY",
+        "Filter policy: one of DEFAULT, WHITELIST-ONLY, STRICT, PARANOID",
         "[POLICY]"
     },
     {

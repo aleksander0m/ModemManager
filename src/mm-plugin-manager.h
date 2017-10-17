@@ -22,6 +22,7 @@
 
 #include "mm-device.h"
 #include "mm-plugin.h"
+#include "mm-filter.h"
 #include "mm-base-modem.h"
 
 #define MM_TYPE_PLUGIN_MANAGER            (mm_plugin_manager_get_type ())
@@ -32,6 +33,7 @@
 #define MM_PLUGIN_MANAGER_GET_CLASS(obj)  (G_TYPE_INSTANCE_GET_CLASS ((obj), MM_TYPE_PLUGIN_MANAGER, MMPluginManagerClass))
 
 #define MM_PLUGIN_MANAGER_PLUGIN_DIR "plugin-dir" /* Construct-only */
+#define MM_PLUGIN_MANAGER_FILTER     "filter"     /* Construct-only */
 
 typedef struct _MMPluginManager MMPluginManager;
 typedef struct _MMPluginManagerClass MMPluginManagerClass;
@@ -48,6 +50,7 @@ struct _MMPluginManagerClass {
 
 GType            mm_plugin_manager_get_type (void);
 MMPluginManager *mm_plugin_manager_new                         (const gchar          *plugindir,
+                                                                MMFilter             *filter,
                                                                 GError              **error);
 void             mm_plugin_manager_device_support_check        (MMPluginManager      *self,
                                                                 MMDevice             *device,

@@ -20,6 +20,8 @@
 #include "mm-filter.h"
 #include "mm-log.h"
 
+#define FILTER_PORT_MAYBE_FORBIDDEN "maybe-forbidden"
+
 G_DEFINE_TYPE (MMFilter, mm_filter, G_TYPE_OBJECT)
 
 enum {
@@ -142,10 +144,10 @@ mm_filter_port (MMFilter        *self,
             return TRUE;
         }
 
-        /* Default forbidden? */
+        /* Default forbidden? flag the port as maybe-forbidden, and go on */
         if (self->priv->enabled_rules & MM_FILTER_RULE_TTY_DEFAULT_FORBIDDEN) {
-            mm_dbg ("[filter] (%s/%s) port forbidden", subsystem, name);
-            return FALSE;
+            g_object_set_data (G_OBJECT (port), FILTER_PORT_MAYBE_FORBIDDEN, GUINT_TO_POINTER (TRUE));
+            return TRUE;
         }
 
         g_assert_not_reached ();
@@ -153,6 +155,40 @@ mm_filter_port (MMFilter        *self,
 
     /* Otherwise forbidden */
     mm_dbg ("[filter] (%s/%s) port filtered: forbidden port type", subsystem, name);
+    return FALSE;
+}
+
+/*****************************************************************************/
+
+gboolean
+mm_filter_device_and_port (MMFilter       *self,
+                           MMDevice       *device,
+                           MMKernelDevice *port)
+{
+    const gchar *subsystem;
+    const gchar *name;
+
+    /* If it wasn't flagged as maybe forbidden, there's nothing to do */
+    if (!GPOINTER_TO_UINT (g_object_get_data (G_OBJECT (port), FILTER_PORT_MAYBE_FORBIDDEN)))
+        return TRUE;
+
+    subsystem = mm_kernel_device_get_subsystem (port);
+    name      = mm_kernel_device_get_name      (port);
+
+    /* Check whether this device holds a NET port in addition to this TTY */
+    if (self->priv->enabled_rules & MM_FILTER_RULE_TTY_WITH_NET) {
+        GList *l;
+
+        for (l = mm_device_peek_port_probe_list (device); l; l = g_list_next (l)) {
+            if (!g_strcmp0 (mm_port_probe_get_port_subsys (MM_PORT_PROBE (l->data)), "net")) {
+                mm_dbg ("[filter] (%s/%s): port allowed: device also exports a net interface (%s)",
+                        subsystem, name, mm_port_probe_get_port_name (MM_PORT_PROBE (l->data)));
+                return TRUE;
+            }
+        }
+    }
+
+    mm_dbg ("[filter] (%s/%s) port filtered: forbidden", subsystem, name);
     return FALSE;
 }
 
@@ -235,6 +271,7 @@ mm_filter_new (MMFilterRule   enabled_rules,
         mm_dbg ("[filter]       platform driver check:    %s", RULE_ENABLED_STR (MM_FILTER_RULE_TTY_PLATFORM_DRIVER));
         mm_dbg ("[filter]       driver check:             %s", RULE_ENABLED_STR (MM_FILTER_RULE_TTY_DRIVER));
         mm_dbg ("[filter]       cdc-acm interface check:  %s", RULE_ENABLED_STR (MM_FILTER_RULE_TTY_ACM_INTERFACE));
+        mm_dbg ("[filter]       with net check:           %s", RULE_ENABLED_STR (MM_FILTER_RULE_TTY_WITH_NET));
         if (self->priv->enabled_rules & MM_FILTER_RULE_TTY_DEFAULT_ALLOWED)
             mm_dbg ("[filter]       default:                  allowed");
         else if (self->priv->enabled_rules & MM_FILTER_RULE_TTY_DEFAULT_FORBIDDEN)

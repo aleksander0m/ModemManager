@@ -38,12 +38,15 @@ G_DEFINE_TYPE_EXTENDED (MMPluginManager, mm_plugin_manager, G_TYPE_OBJECT, 0,
 enum {
     PROP_0,
     PROP_PLUGIN_DIR,
+    PROP_FILTER,
     LAST_PROP
 };
 
 struct _MMPluginManagerPrivate {
     /* Path to look for plugins */
     gchar *plugin_dir;
+    /* Device filter */
+    MMFilter *filter;
 
     /* This list contains all plugins except for the generic one, order is not
      * important. It is loaded once when the program starts, and the list is NOT
@@ -1106,19 +1109,34 @@ device_context_run_port_context (DeviceContext *device_context,
 static gboolean
 device_context_min_wait_time_elapsed (DeviceContext *device_context)
 {
+    MMPluginManager *self;
     GList           *l;
+    GList           *tmp;
+
+    self = device_context->self;
 
     device_context->min_wait_time_id = 0;
     mm_dbg ("[plugin manager] task %s: min wait time elapsed", device_context->name);
 
     /* Move list of port contexts out of the wait list */
     g_assert (!device_context->port_contexts);
-    device_context->port_contexts = device_context->wait_port_contexts;
+    tmp = device_context->wait_port_contexts;
     device_context->wait_port_contexts = NULL;
 
     /* Launch supports check for each port in the Plugin Manager */
-    for (l = device_context->port_contexts; l; l = g_list_next (l))
-        device_context_run_port_context (device_context, (PortContext *)(l->data));
+    for (l = tmp; l; l = g_list_next (l)) {
+        PortContext *port_context = (PortContext *)(l->data);
+
+        if (!mm_filter_device_and_port (self->priv->filter, port_context->device, port_context->port)) {
+            /* If port is filtered, unref it right away */
+            port_context_unref (port_context);
+        } else {
+            /* If port not filtered, store and run it */
+            device_context->port_contexts = g_list_append (device_context->port_contexts, port_context);
+            device_context_run_port_context (device_context, port_context);
+        }
+    }
+    g_list_free (tmp);
 
     return G_SOURCE_REMOVE;
 }
@@ -1620,13 +1638,15 @@ out:
 }
 
 MMPluginManager *
-mm_plugin_manager_new (const gchar *plugin_dir,
-                       GError **error)
+mm_plugin_manager_new (const gchar  *plugin_dir,
+                       MMFilter     *filter,
+                       GError      **error)
 {
     return g_initable_new (MM_TYPE_PLUGIN_MANAGER,
                            NULL,
                            error,
                            MM_PLUGIN_MANAGER_PLUGIN_DIR, plugin_dir,
+                           MM_PLUGIN_MANAGER_FILTER,     filter,
                            NULL);
 }
 
@@ -1652,6 +1672,9 @@ set_property (GObject *object,
         g_free (priv->plugin_dir);
         priv->plugin_dir = g_value_dup_string (value);
         break;
+    case PROP_FILTER:
+        priv->filter = g_value_dup_object (value);
+        break;
     default:
         G_OBJECT_WARN_INVALID_PROPERTY_ID (object, prop_id, pspec);
         break;
@@ -1669,6 +1692,9 @@ get_property (GObject *object,
     switch (prop_id) {
     case PROP_PLUGIN_DIR:
         g_value_set_string (value, priv->plugin_dir);
+        break;
+    case PROP_FILTER:
+        g_value_set_object (value, priv->filter);
         break;
     default:
         G_OBJECT_WARN_INVALID_PROPERTY_ID (object, prop_id, pspec);
@@ -1700,6 +1726,8 @@ dispose (GObject *object)
     g_free (self->priv->plugin_dir);
     self->priv->plugin_dir = NULL;
 
+    g_clear_object (&self->priv->filter);
+
     G_OBJECT_CLASS (mm_plugin_manager_parent_class)->dispose (object);
 }
 
@@ -1728,5 +1756,12 @@ mm_plugin_manager_class_init (MMPluginManagerClass *manager_class)
                               "Plugin directory",
                               "Where to look for plugins",
                               NULL,
+                              G_PARAM_READWRITE | G_PARAM_CONSTRUCT_ONLY));
+    g_object_class_install_property
+        (object_class, PROP_FILTER,
+         g_param_spec_object (MM_PLUGIN_MANAGER_FILTER,
+                              "Filter",
+                              "Device filter",
+                              MM_TYPE_FILTER,
                               G_PARAM_READWRITE | G_PARAM_CONSTRUCT_ONLY));
 }

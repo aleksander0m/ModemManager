@@ -19,6 +19,7 @@
 #include <glib-object.h>
 #include <gio/gio.h>
 
+#include "mm-device.h"
 #include "mm-kernel-device.h"
 
 #define MM_TYPE_FILTER            (mm_filter_get_type ())
@@ -56,7 +57,8 @@ typedef enum { /*< underscore_name=mm_filter_rule >*/
     MM_FILTER_RULE_TTY_DEFAULT_ALLOWED   = 1 << 8,
     MM_FILTER_RULE_TTY_DRIVER            = 1 << 9,
     MM_FILTER_RULE_TTY_ACM_INTERFACE     = 1 << 10,
-    MM_FILTER_RULE_TTY_DEFAULT_FORBIDDEN = 1 << 11,
+    MM_FILTER_RULE_TTY_WITH_NET          = 1 << 11,
+    MM_FILTER_RULE_TTY_DEFAULT_FORBIDDEN = 1 << 12,
 } MMFilterRule;
 
 #define MM_FILTER_RULE_ALL                  \
@@ -70,6 +72,8 @@ typedef enum { /*< underscore_name=mm_filter_rule >*/
      MM_FILTER_RULE_TTY_PLATFORM_DRIVER   | \
      MM_FILTER_RULE_TTY_DEFAULT_ALLOWED   | \
      MM_FILTER_RULE_TTY_DRIVER            | \
+     MM_FILTER_RULE_TTY_ACM_INTERFACE     | \
+     MM_FILTER_RULE_TTY_WITH_NET          | \
      MM_FILTER_RULE_TTY_DEFAULT_FORBIDDEN)
 
 /* This is the default ModemManager policy that tries to automatically probe
@@ -96,6 +100,7 @@ typedef enum { /*< underscore_name=mm_filter_rule >*/
      MM_FILTER_RULE_TTY_PLATFORM_DRIVER   | \
      MM_FILTER_RULE_TTY_DRIVER            | \
      MM_FILTER_RULE_TTY_ACM_INTERFACE     | \
+     MM_FILTER_RULE_TTY_WITH_NET          | \
      MM_FILTER_RULE_TTY_DEFAULT_FORBIDDEN)
 
 /* This is equivalent to the strict policy, but also applying the device
@@ -111,6 +116,7 @@ typedef enum { /*< underscore_name=mm_filter_rule >*/
      MM_FILTER_RULE_TTY_PLATFORM_DRIVER   | \
      MM_FILTER_RULE_TTY_DRIVER            | \
      MM_FILTER_RULE_TTY_ACM_INTERFACE     | \
+     MM_FILTER_RULE_TTY_WITH_NET          | \
      MM_FILTER_RULE_TTY_DEFAULT_FORBIDDEN)
 
 /* This policy only allows using device ports explicitly whitelisted via
@@ -123,5 +129,9 @@ MMFilter *mm_filter_new (MMFilterRule   enabled_rules,
 gboolean mm_filter_port (MMFilter        *self,
                          MMKernelDevice  *port,
                          gboolean         manual_scan);
+
+gboolean mm_filter_device_and_port (MMFilter       *self,
+                                    MMDevice       *device,
+                                    MMKernelDevice *port);
 
 #endif /* MM_FILTER_H */

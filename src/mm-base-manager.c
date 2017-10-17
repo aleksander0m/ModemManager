@@ -1144,7 +1144,7 @@ initable_init (GInitable *initable,
         return FALSE;
 
     /* Create plugin manager */
-    priv->plugin_manager = mm_plugin_manager_new (priv->plugin_dir, error);
+    priv->plugin_manager = mm_plugin_manager_new (priv->plugin_dir, priv->filter, error);
     if (!priv->plugin_manager)
         return FALSE;
 

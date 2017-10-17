@@ -51,17 +51,16 @@
     </formalpara>
   </chapter>
 
-  <chapter id="ref-overview-modem-detection-and-setup">
-    <title>Modem detection and setup</title>
+  <chapter id="ref-overview-modem-detection">
+    <title>Modem detection</title>
 
     <section>
-      <title>Detection mechanisms</title>
+      <title>Builds with udev support</title>
       <para>
         ModemManager requires <emphasis>udev</emphasis>-powered Linux kernels in order
         to get notified of possible available Modems. udev will report each of the ports
-        found in the device, and ModemManager will probe each of the ports marked with
-        the <emphasis>ID_MM_CANDIDATE</emphasis> tag in udev. This includes both "tty"
-        and "net" ports.
+        found in the device, and ModemManager will consider for probing each of the ports
+	marked with the <emphasis>ID_MM_CANDIDATE</emphasis> tag in udev.
       </para>
       <para>
         Aditionally, users of RS232-based devices may need to request additional manual
@@ -69,6 +68,269 @@
         RS232 to USB adapters. In this case, udev just knows about the USB adapter being
         connected, not about the RS232 modem connected to the adapter, if any.
       </para>
+    </section>
+
+    <section>
+      <title>Builds without udev support</title>
+      <para>
+        When the udev daemon isn't available in the system, the
+	<link linkend="gdbus-method-org-freedesktop-ModemManager1.ReportKernelEvent">ReportKernelEvent</link>
+	method in the
+	<link linkend="gdbus-org.freedesktop.ModemManager1">Manager interface</link>
+	may be used to notify the ModemManager daemons of device addition and removals.
+      </para>
+      <para>
+	When udev support is disabled in the build, the <emphasis>ID_MM_CANDIDATE</emphasis>
+	tag and manual scan requests are still applicable. ModemManager has a built-in parser
+	of udev rule files that is enabled when udev itself isn't available.
+      </para>
+    </section>
+  </chapter>
+
+  <chapter id="ref-overview-modem-filter">
+    <title>Modem filter</title>
+
+    <para>
+      ModemManager will not probe all TTYs, NET and cdc-wdm ports found in the system,
+      as this may end up interfering e.g. with TTYs that have nothing to do with modem
+      devices.
+    </para>
+    <para>
+      The daemon comes with several predefined <emphasis>filter policies</emphasis>, each
+      of them composed of one or more <emphasis>filter rules</emphasis>.
+    </para>
+
+    <section>
+      <title>Filter rules</title>
+      <para>
+	The device filter in ModemManager defines the following independent filter rules. The
+	predefined filter policies are based on one or more of these predefined filter rules.
+        <itemizedlist>
+          <listitem>
+            <para><emphasis>MM_FILTER_RULE_EXPLICIT_WHITELIST</emphasis></para>
+            <para>
+	      This filter allows users to manually tag devices and/or device ports with the
+	      <emphasis>ID_MM_DEVICE_PROCESS</emphasis> udev tag. If the filter finds this tag,
+	      the device and/or device ports will be automatically accepted and port probing
+	      will be allowed.
+	    </para>
+	  </listitem>
+          <listitem>
+            <para><emphasis>MM_FILTER_RULE_VIRTUAL</emphasis></para>
+            <para>
+	      This filter will automatically flag as forbidden all ports exposed by virtual
+	      devices, like the 'lo' network interface or the tty0, tty1... virtual terminals.
+	      There is no reason to disable this filter, except for testing purposes.
+	    </para>
+	  </listitem>
+          <listitem>
+            <para><emphasis>MM_FILTER_RULE_NET</emphasis></para>
+            <para>
+	      This filter will automatically flag as allowed all network ports exposed by
+	      devices. Unless there is a will to explicitly forbid network ports, this filter
+	      should always be enabled.
+	    </para>
+	  </listitem>
+          <listitem>
+            <para><emphasis>MM_FILTER_RULE_CDC_WDM</emphasis></para>
+            <para>
+	      This filter will automatically flag as allowed all cdc-wdm ports exposed by
+	      devices. Unless there is a will to explicitly forbid the cdc-wdm ports exposed
+	      by qmi_wwan, cdc_mbim or huawei-cdc-ncm kernel drivers, this filter should always
+	      be enabled.
+	    </para>
+	  </listitem>
+          <listitem>
+            <para><emphasis>MM_FILTER_RULE_TTY, MM_FILTER_RULE_TTY_DEFAULT_ALLOWED and MM_FILTER_RULE_TTY_DEFAULT_FORBIDDEN</emphasis></para>
+            <para>
+	      If the MM_FILTER_RULE_TTY filter is disabled, no TTY port will be allowed. If this
+	      filter is enabled, TTY ports will only be allowed if the TTY-specific filters (defined
+	      next) allow it.
+	    </para>
+	    <para>
+	      The MM_FILTER_RULE_TTY_DEFAULT_ALLOWED and MM_FILTER_RULE_TTY_DEFAULT_FORBIDDEN rules allow
+	      defining what happens when a TTY port isn't explicitly forbidden or accepted by any of
+	      the TTY-specific filters. When MM_FILTER_RULE_TTY is enabled, one of these other two options
+	      must be set.
+	    </para>
+	  </listitem>
+          <listitem>
+            <para><emphasis>MM_FILTER_RULE_TTY_BLACKLIST</emphasis></para>
+            <para>
+	      This filter will not allow probing any of the devices flagged as
+	      <emphasis>ID_MM_DEVICE_IGNORE</emphasis>, like the ones in the default blacklist
+	      shipped by ModemManager.
+	    </para>
+	  </listitem>
+          <listitem>
+            <para><emphasis>MM_FILTER_RULE_TTY_MANUAL_SCAN_ONLY</emphasis></para>
+            <para>
+	      This filter will not allow automatic probing any of the devices flagged as
+	      <emphasis>ID_MM_DEVICE_MANUAL_SCAN_ONLY</emphasis>, like the ones in the default
+	      USB serial adapters greylist shipped by ModemManager. Devices flagged like
+	      this will only be probed when a manual scan is requested via the
+	      <link linkend="gdbus-method-org-freedesktop-ModemManager1.ScanDevices">ScanDevices</link>
+	      method.
+	    </para>
+	  </listitem>
+          <listitem>
+            <para><emphasis>MM_FILTER_RULE_TTY_PLATFORM_DRIVER</emphasis></para>
+            <para>
+	      If this filter is enabled, all platform TTY ports not explicitly flagged with the
+	      <emphasis>ID_MM_PLATFORM_DRIVER_PROBE</emphasis> will be forbidden. If the flag
+	      is found in a platform TTY port, port probing will be allowed directly.
+	    </para>
+	    <para>
+	      Note that this filter is obsoleted by the more generic MM_FILTER_RULE_EXPLICIT_WHITELIST
+	      filter. It is maintained for backwards compatibility with older ModemManager versions.
+	    </para>
+	  </listitem>
+          <listitem>
+            <para><emphasis>MM_FILTER_RULE_TTY_DRIVER</emphasis></para>
+            <para>
+	      If this filter is enabled, all TTY ports managed by modem-specific kernel drivers will be
+	      allowed automatically.
+	    </para>
+	  </listitem>
+          <listitem>
+            <para><emphasis>FILTER_RULE_TTY_ACM_INTERFACE</emphasis></para>
+            <para>
+	      If this filter is enabled, all TTY ports managed by the cdc-acm kernel driver with
+	      class=2/subclass=2/protocol=1 (AT command capable ttyACM port) will be allowed
+	      automatically.
+	    </para>
+	  </listitem>
+          <listitem>
+            <para><emphasis>MM_FILTER_RULE_TTY_WITH_NET</emphasis></para>
+            <para>
+	      If this filter is enabled, all TTY ports for devices that also expose a network
+	      interface port will be allowed automatically.
+	    </para>
+	  </listitem>
+	</itemizedlist>
+      </para>
+    </section>
+
+    <section>
+      <title>Filter policies</title>
+
+      <para>
+	The predefined filter policies are:
+        <itemizedlist>
+          <listitem>
+            <para><emphasis>Whitelist only</emphasis></para>
+            <para>
+	      This is a policy where only the MM_FILTER_RULE_EXPLICIT_WHITELIST rule is enabled.
+	    </para>
+	    <programlisting># /usr/sbin/ModemManager --filter-policy=WHITELIST-ONLY</programlisting>
+	  </listitem>
+          <listitem>
+            <para><emphasis>Default</emphasis></para>
+            <para>
+	      This is a policy where the following rules are enabled:
+	      <itemizedlist>
+		<listitem>MM_FILTER_RULE_EXPLICIT_WHITELIST</listitem>
+		<listitem>MM_FILTER_RULE_VIRTUAL</listitem>
+		<listitem>MM_FILTER_RULE_NET</listitem>
+		<listitem>MM_FILTER_RULE_CDC_WDM</listitem>
+		<listitem>MM_FILTER_RULE_TTY</listitem>
+		<listitem>MM_FILTER_RULE_TTY_BLACKLIST</listitem>
+		<listitem>MM_FILTER_RULE_TTY_MANUAL_SCAN_ONLY</listitem>
+		<listitem>MM_FILTER_RULE_TTY_PLATFORM_DRIVER</listitem>
+		<listitem>MM_FILTER_RULE_TTY_DEFAULT_ALLOWED</listitem>
+	      </itemizedlist>
+	    </para>
+	    <para>
+	      This policy is the default one when a different one not explicitly
+	      selected, and is equivalent to the way ModemManager has worked in previous
+	      releases. This policy is the less restrictive one, and will end up
+	      allowing port probing of all TTYs not explicitly blacklisted in one way
+	      or another.
+	    </para>
+	    <programlisting># /usr/sbin/ModemManager --filter-policy=DEFAULT</programlisting>
+	  </listitem>
+          <listitem>
+            <para><emphasis>Strict</emphasis></para>
+            <para>
+	      This is a policy where the following rules are enabled:
+	      <itemizedlist>
+		<listitem>MM_FILTER_RULE_EXPLICIT_WHITELIST</listitem>
+		<listitem>MM_FILTER_RULE_VIRTUAL</listitem>
+		<listitem>MM_FILTER_RULE_NET</listitem>
+		<listitem>MM_FILTER_RULE_CDC_WDM</listitem>
+		<listitem>MM_FILTER_RULE_TTY</listitem>
+		<listitem>MM_FILTER_RULE_TTY_PLATFORM_DRIVER</listitem>
+		<listitem>MM_FILTER_RULE_TTY_DRIVER</listitem>
+		<listitem>MM_FILTER_RULE_TTY_ACM_INTERFACE</listitem>
+		<listitem>MM_FILTER_RULE_TTY_WITH_NET</listitem>
+		<listitem>MM_FILTER_RULE_TTY_DEFAULT_FORBIDDEN</listitem>
+	      </itemizedlist>
+	    </para>
+	    <para>
+	      This policy is stricter than the default one, as by default all TTYs are
+	      forbidden except for the ones explicitly allowed by one of the TTY-specific
+	      rules. Distributions or users should use this policy if they don't want
+	      ModemManager to mess around with TTY ports that may not be exposed by
+	      actual modems.
+	    </para>
+	    <programlisting># /usr/sbin/ModemManager --filter-policy=STRICT</programlisting>
+	  </listitem>
+          <listitem>
+            <para><emphasis>Paranoid</emphasis></para>
+            <para>
+	      This policy is a mix of the Default and Strict ones:
+	      <itemizedlist>
+		<listitem>MM_FILTER_RULE_EXPLICIT_WHITELIST</listitem>
+		<listitem>MM_FILTER_RULE_VIRTUAL</listitem>
+		<listitem>MM_FILTER_RULE_NET</listitem>
+		<listitem>MM_FILTER_RULE_CDC_WDM</listitem>
+		<listitem>MM_FILTER_RULE_TTY</listitem>
+		<listitem>MM_FILTER_RULE_TTY_BLACKLIST</listitem>
+		<listitem>MM_FILTER_RULE_TTY_MANUAL_SCAN_ONLY</listitem>
+		<listitem>MM_FILTER_RULE_TTY_PLATFORM_DRIVER</listitem>
+		<listitem>MM_FILTER_RULE_TTY_DRIVER</listitem>
+		<listitem>MM_FILTER_RULE_TTY_ACM_INTERFACE</listitem>
+		<listitem>MM_FILTER_RULE_TTY_WITH_NET</listitem>
+		<listitem>MM_FILTER_RULE_TTY_DEFAULT_FORBIDDEN</listitem>
+	      </itemizedlist>
+	    </para>
+	    <para>
+	      This policy is equivalent to the Strict policy, but where the ModemManager
+	      provided blacklist and manual scan only greylist are also used. It is not
+	      recommended to use this option in normal setups as the blacklists may be
+	      obsoleted in future ModemManager versions (in favor of using the Strict
+	      policy as default).
+	    </para>
+	    <programlisting># /usr/sbin/ModemManager --filter-policy=PARANOID</programlisting>
+	  </listitem>
+
+          <listitem>
+            <para><emphasis>Custom</emphasis></para>
+            <para>
+	      Any of the previously defined predefined policies may be modified rule per rule
+	      by explicitly enabling or disabling rules via environment variables.
+	    </para>
+	    <para>
+	      E.g. this would launch ModemManager with the Default filter policy but with all
+	      net and cdc-wdm ports forbidden completely:
+	      <programlisting>
+# MM_FILTER_RULE_NET=0 \
+  MM_FILTER_RULE_CDC_WDM=0 \
+  /usr/sbin/ModemManager --policy=DEFAULT</programlisting>
+	    </para>
+	    <para>
+	      E.g. this would launch ModemManager with the Whitelist-only filter policy but also
+	      explicitly allowing all net and cdc-wdm ports. Note that in this case, all virtual
+	      net ports (e.g. 'lo') are also being allowed.
+	      <programlisting>
+# MM_FILTER_RULE_NET=1 \
+  MM_FILTER_RULE_CDC_WDM=1 \
+  /usr/sbin/ModemManager --policy=WHITELIST-ONLY</programlisting>
+	    </para>
+	  </listitem>
+	</itemizedlist>
+      </para>
+
     </section>
   </chapter>
 

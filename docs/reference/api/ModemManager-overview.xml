@@ -243,7 +243,7 @@
 	    <para>
 	      This policy is the default one when a different one not explicitly
 	      selected, and is equivalent to the way ModemManager has worked in previous
-	      releases. This policy is the less restrictive one, and will end up
+	      releases. This policy is the least restrictive one, and will end up
 	      allowing port probing of all TTYs not explicitly blacklisted in one way
 	      or another.
 	    </para>

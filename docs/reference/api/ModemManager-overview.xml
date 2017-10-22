@@ -60,7 +60,7 @@
         ModemManager requires <emphasis>udev</emphasis>-powered Linux kernels in order
         to get notified of possible available Modems. udev will report each of the ports
         found in the device, and ModemManager will consider for probing each of the ports
-	marked with the <emphasis>ID_MM_CANDIDATE</emphasis> tag in udev.
+        marked with the <emphasis>ID_MM_CANDIDATE</emphasis> tag in udev.
       </para>
       <para>
         Aditionally, users of RS232-based devices may need to request additional manual
@@ -74,15 +74,15 @@
       <title>Builds without udev support</title>
       <para>
         When the udev daemon isn't available in the system, the
-	<link linkend="gdbus-method-org-freedesktop-ModemManager1.ReportKernelEvent">ReportKernelEvent</link>
-	method in the
-	<link linkend="gdbus-org.freedesktop.ModemManager1">Manager interface</link>
-	may be used to notify the ModemManager daemons of device addition and removals.
+        <link linkend="gdbus-method-org-freedesktop-ModemManager1.ReportKernelEvent">ReportKernelEvent</link>
+        method in the
+        <link linkend="gdbus-org.freedesktop.ModemManager1">Manager interface</link>
+        may be used to notify the ModemManager daemons of device addition and removals.
       </para>
       <para>
-	When udev support is disabled in the build, the <emphasis>ID_MM_CANDIDATE</emphasis>
-	tag and manual scan requests are still applicable. ModemManager has a built-in parser
-	of udev rule files that is enabled when udev itself isn't available.
+        When udev support is disabled in the build, the <emphasis>ID_MM_CANDIDATE</emphasis>
+        tag and manual scan requests are still applicable. ModemManager has a built-in parser
+        of udev rule files that is enabled when udev itself isn't available.
       </para>
     </section>
   </chapter>

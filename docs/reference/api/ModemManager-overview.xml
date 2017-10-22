@@ -316,7 +316,7 @@
 	      <programlisting>
 # MM_FILTER_RULE_NET=0 \
   MM_FILTER_RULE_CDC_WDM=0 \
-  /usr/sbin/ModemManager --policy=DEFAULT</programlisting>
+  /usr/sbin/ModemManager --filter-policy=DEFAULT</programlisting>
 	    </para>
 	    <para>
 	      E.g. this would launch ModemManager with the Whitelist-only filter policy but also
@@ -325,7 +325,7 @@
 	      <programlisting>
 # MM_FILTER_RULE_NET=1 \
   MM_FILTER_RULE_CDC_WDM=1 \
-  /usr/sbin/ModemManager --policy=WHITELIST-ONLY</programlisting>
+  /usr/sbin/ModemManager --filter-policy=WHITELIST-ONLY</programlisting>
 	    </para>
 	  </listitem>
 	</itemizedlist>

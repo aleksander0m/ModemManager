@@ -114,6 +114,15 @@
               the device and/or device ports will be automatically accepted and port probing
               will be allowed.
             </para>
+            <programlisting>
+$ sudo vim /lib/udev/rules.d/78-mm-whitelist-internal-modem.rules
+    ACTION!="add|change|move", GOTO="mm_whitelist_internal_modem_end"
+    ATTRS{idVendor}=="1199", ATTRS{idProduct}=="a001", ENV{ID_MM_DEVICE_PROCESS}="1"
+    LABEL="mm_whitelist_internal_modem_end"
+// Apply new rules without reboot
+$ sudo udevadm control --reload
+$ sudo udevadm trigger
+            </programlisting>
           </listitem>
           <listitem>
             <para><emphasis>MM_FILTER_RULE_VIRTUAL</emphasis></para>

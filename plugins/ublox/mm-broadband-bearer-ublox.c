@@ -513,13 +513,18 @@ cgpaddr_ready (MMBaseModem  *modem,
         return;
     }
 
-    for (l = pdp_addresses; !ctx->address && l; l = g_list_next (l)) {
+    for (l = pdp_addresses; l; l = g_list_next (l)) {
         const MM3gppPdpContextAddress *item;
 
         item = l->data;
         if (ctx->cid == item->cid) {
-            mm_dbg ("IP address for PDP context %u found: %s", ctx->cid, item->address);
-            ctx->address = g_strdup (item->address);
+            if (g_str_equal (item->address, "0.0.0.0")) {
+                mm_dbg ("Invalid IP address reported for PDP context %u: %s", ctx->cid, item->address);
+            } else {
+                mm_dbg ("IP address for PDP context %u found: %s", ctx->cid, item->address);
+                ctx->address = g_strdup (item->address);
+            }
+            break;
         }
     }
 

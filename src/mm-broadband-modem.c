@@ -481,8 +481,18 @@ parse_caps_cpin (MMBaseModem *self,
                  GVariant **result,
                  GError **result_error)
 {
-    if (!response)
+    if (!response) {
+        if (error &&
+            (g_error_matches (error, MM_MOBILE_EQUIPMENT_ERROR, MM_MOBILE_EQUIPMENT_ERROR_SIM_NOT_INSERTED) ||
+             g_error_matches (error, MM_MOBILE_EQUIPMENT_ERROR, MM_MOBILE_EQUIPMENT_ERROR_SIM_FAILURE) ||
+             g_error_matches (error, MM_MOBILE_EQUIPMENT_ERROR, MM_MOBILE_EQUIPMENT_ERROR_SIM_BUSY) ||
+             g_error_matches (error, MM_MOBILE_EQUIPMENT_ERROR, MM_MOBILE_EQUIPMENT_ERROR_SIM_WRONG))) {
+            /* At least, it's a GSM modem */
+            *result = g_variant_new_uint32 (MM_MODEM_CAPABILITY_GSM_UMTS);
+            return TRUE;
+        }
         return FALSE;
+    }
 
     if (strcasestr (response, "SIM PIN") ||
         strcasestr (response, "SIM PUK") ||

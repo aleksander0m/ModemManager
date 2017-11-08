@@ -477,7 +477,7 @@ uiproute_ready (MMBaseModem  *modem,
 
     if (!mm_ublox_parse_uiproute_response_find_default_route_for_ipaddr (response, ctx->address, &error)) {
         mm_dbg ("Couldn't find default route: %s", error->message);
-        g_free (error);
+        g_error_free (error);
         /* Try to add destination right away */
         uiproute_add_destination (task);
         return;

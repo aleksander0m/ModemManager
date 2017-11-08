@@ -946,10 +946,25 @@ cgact_deactivate_ready (MMBaseModem  *modem,
     GError      *error = NULL;
 
     response = mm_base_modem_at_command_finish (modem, res, &error);
-    if (!response)
-        g_task_return_error (task, error);
-    else
-        g_task_return_boolean (task, TRUE);
+    if (!response) {
+        /* +CME error 148 isn't fatal */
+        if (!g_error_matches (error, MM_MOBILE_EQUIPMENT_ERROR, MM_MOBILE_EQUIPMENT_ERROR_GPRS_UNKNOWN)) {
+            g_task_return_error (task, error);
+            g_object_unref (task);
+            return;
+        }
+
+        /* TOBY-L4 doesn't allow to disconnect the last LTE bearer as that
+         * would imply de-registration from the LTE network, so we just
+         * assume that it's disconnected from the user point of view.
+         *    AT+CGACT=0,1
+         *    +CME ERROR: 148
+         */
+        mm_dbg ("ignored error when disconnecting last LTE bearer: %s", error->message);
+        g_clear_error (&error);
+    }
+
+    g_task_return_boolean (task, TRUE);
     g_object_unref (task);
 }
 

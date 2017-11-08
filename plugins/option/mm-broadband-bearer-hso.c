@@ -37,10 +37,10 @@
 G_DEFINE_TYPE (MMBroadbandBearerHso, mm_broadband_bearer_hso, MM_TYPE_BROADBAND_BEARER);
 
 struct _MMBroadbandBearerHsoPrivate {
-    guint auth_idx;
-    gpointer connect_pending;
-    guint connect_pending_id;
-    gulong connect_cancellable_id;
+    guint  auth_idx;
+
+    GTask *connect_pending;
+    guint  connect_pending_id;
     gulong connect_port_closed_id;
 };
 
@@ -216,88 +216,63 @@ get_ip_config_3gpp (MMBroadbandBearer *self,
 /* 3GPP Dialing (sub-step of the 3GPP Connection sequence) */
 
 typedef struct {
-    MMBroadbandBearerHso *self;
-    MMBaseModem *modem;
+    MMBaseModem    *modem;
     MMPortSerialAt *primary;
-    guint cid;
-    GCancellable *cancellable;
-    GSimpleAsyncResult *result;
-    MMPort *data;
-    guint auth_idx;
-    GError *saved_error;
+    guint           cid;
+    MMPort         *data;
+    guint           auth_idx;
+    GError         *saved_error;
 } Dial3gppContext;
 
 static void
-dial_3gpp_context_complete_and_free (Dial3gppContext *ctx)
+dial_3gpp_context_free (Dial3gppContext *ctx)
 {
-    g_simple_async_result_complete_in_idle (ctx->result);
-    if (ctx->data)
-        g_object_unref (ctx->data);
-    g_object_unref (ctx->cancellable);
-    g_object_unref (ctx->result);
-    g_object_unref (ctx->primary);
-    g_object_unref (ctx->modem);
-    g_object_unref (ctx->self);
+    g_assert (!ctx->saved_error);
+    g_clear_object (&ctx->data);
+    g_clear_object (&ctx->primary);
+    g_clear_object (&ctx->modem);
     g_slice_free (Dial3gppContext, ctx);
 }
 
-static gboolean
-dial_3gpp_context_set_error_if_cancelled (Dial3gppContext *ctx,
-                                          GError **error)
-{
-    if (!g_cancellable_is_cancelled (ctx->cancellable))
-        return FALSE;
-
-    g_set_error (error,
-                 MM_CORE_ERROR,
-                 MM_CORE_ERROR_CANCELLED,
-                 "Dial operation has been cancelled");
-    return TRUE;
-}
-
-static gboolean
-dial_3gpp_context_complete_and_free_if_cancelled (Dial3gppContext *ctx)
-{
-    GError *error = NULL;
-
-    if (!dial_3gpp_context_set_error_if_cancelled (ctx, &error))
-        return FALSE;
-
-    g_simple_async_result_take_error (ctx->result, error);
-    dial_3gpp_context_complete_and_free (ctx);
-    return TRUE;
-}
-
 static MMPort *
-dial_3gpp_finish (MMBroadbandBearer *self,
-                  GAsyncResult *res,
-                  GError **error)
+dial_3gpp_finish (MMBroadbandBearer  *self,
+                  GAsyncResult       *res,
+                  GError           **error)
 {
-    if (g_simple_async_result_propagate_error (G_SIMPLE_ASYNC_RESULT (res), error))
-        return NULL;
-
-    return MM_PORT (g_object_ref (g_simple_async_result_get_op_res_gpointer (G_SIMPLE_ASYNC_RESULT (res))));
+    return MM_PORT (g_task_propagate_pointer (G_TASK (res), error));
 }
 
 static void
-connect_reset_ready (MMBaseModem *modem,
+connect_reset_ready (MMBaseModem  *modem,
                      GAsyncResult *res,
-                     Dial3gppContext *ctx)
+                     GTask        *task)
 {
+    Dial3gppContext *ctx;
+
+    ctx = g_task_get_task_data (task);
+
     mm_base_modem_at_command_full_finish (modem, res, NULL);
 
-    /* error should have already been set in the simple async result */
-    dial_3gpp_context_complete_and_free (ctx);
+    /* When reset is requested, it was either cancelled or an error was stored */
+    if (!g_task_return_error_if_cancelled (task)) {
+        g_assert (ctx->saved_error);
+        g_task_return_error (task, ctx->saved_error);
+        ctx->saved_error = NULL;
+    }
+
+    g_object_unref (task);
 }
 
 static void
-connect_reset (Dial3gppContext *ctx)
+connect_reset (GTask *task)
 {
-    gchar *command;
+    Dial3gppContext *ctx;
+    gchar           *command;
+
+    ctx = g_task_get_task_data (task);
 
     /* Need to reset the connection attempt */
-    command = g_strdup_printf ("AT_OWANCALL=%d,0,1",
-                               ctx->cid);
+    command = g_strdup_printf ("AT_OWANCALL=%d,0,1", ctx->cid);
     mm_base_modem_at_command_full (ctx->modem,
                                    ctx->primary,
                                    command,
@@ -306,28 +281,30 @@ connect_reset (Dial3gppContext *ctx)
                                    FALSE, /* raw */
                                    NULL, /* cancellable */
                                    (GAsyncReadyCallback)connect_reset_ready,
-                                   ctx);
+                                   task);
     g_free (command);
 }
 
 static void
-report_connection_status (MMBaseBearer *bearer,
-                          MMBearerConnectionStatus status)
+report_connection_status (MMBaseBearer             *_self,
+                          MMBearerConnectionStatus  status)
 {
-    MMBroadbandBearerHso *self = MM_BROADBAND_BEARER_HSO (bearer);
-    Dial3gppContext *ctx;
+    MMBroadbandBearerHso *self = MM_BROADBAND_BEARER_HSO (_self);
+    GTask                *task;
+    Dial3gppContext      *ctx;
 
     g_assert (status == MM_BEARER_CONNECTION_STATUS_CONNECTED ||
               status == MM_BEARER_CONNECTION_STATUS_CONNECTION_FAILED ||
               status == MM_BEARER_CONNECTION_STATUS_DISCONNECTED);
 
-    /* Recover context (if any) and remove both cancellation and timeout (if any)*/
-    ctx = self->priv->connect_pending;
+    /* Recover task (if any) and remove both cancellation and timeout (if any)*/
+    task = self->priv->connect_pending;
     self->priv->connect_pending = NULL;
 
     /* Connection status reported but no connection attempt? */
-    if (!ctx) {
-        g_assert (self->priv->connect_pending_id == 0);
+    if (!task) {
+        g_assert (!self->priv->connect_pending_id);
+        g_assert (!self->priv->connect_port_closed_id);
 
         mm_dbg ("Received spontaneous _OWANCALL (%s)",
                 mm_bearer_connection_status_get_string (status));
@@ -336,21 +313,17 @@ report_connection_status (MMBaseBearer *bearer,
             /* If no connection attempt on-going, make sure we mark ourselves as
              * disconnected */
             MM_BASE_BEARER_CLASS (mm_broadband_bearer_hso_parent_class)->report_connection_status (
-                bearer,
+                _self,
                 status);
         }
         return;
     }
 
+    ctx = g_task_get_task_data (task);
+
     if (self->priv->connect_pending_id) {
         g_source_remove (self->priv->connect_pending_id);
         self->priv->connect_pending_id = 0;
-    }
-
-    if (self->priv->connect_cancellable_id) {
-        g_cancellable_disconnect (ctx->cancellable,
-                                  self->priv->connect_cancellable_id);
-        self->priv->connect_cancellable_id = 0;
     }
 
     if (self->priv->connect_port_closed_id) {
@@ -360,105 +333,60 @@ report_connection_status (MMBaseBearer *bearer,
 
     /* Reporting connected */
     if (status == MM_BEARER_CONNECTION_STATUS_CONNECTED) {
-        /* If we wanted to get cancelled before, do it now */
-        if (ctx->saved_error) {
-            /* Keep error */
-            g_simple_async_result_take_error (ctx->result, ctx->saved_error);
-            ctx->saved_error = NULL;
-            /* Cancel connection */
-            connect_reset (ctx);
+        /* If we wanted to get cancelled before, do it now. */
+        if (g_cancellable_is_cancelled (g_task_get_cancellable (task))) {
+            connect_reset (task);
             return;
         }
 
-        g_simple_async_result_set_op_res_gpointer (ctx->result,
-                                                   g_object_ref (ctx->data),
-                                                   g_object_unref);
-        dial_3gpp_context_complete_and_free (ctx);
+        g_task_return_pointer (task, g_object_ref (ctx->data), g_object_unref);
+        g_object_unref (task);
         return;
     }
 
-    /* If we wanted to get cancelled before and now we couldn't connect,
-     * use the cancelled error and return */
-    if (ctx->saved_error) {
-        g_simple_async_result_take_error (ctx->result, ctx->saved_error);
-        ctx->saved_error = NULL;
-        dial_3gpp_context_complete_and_free (ctx);
-        return;
-    }
-
-    /* Received CONNECTION_FAILED or DISCONNECTED during a connection attempt? */
-    g_simple_async_result_set_error (ctx->result,
-                                     MM_CORE_ERROR,
-                                     MM_CORE_ERROR_FAILED,
-                                     "Call setup failed");
-    dial_3gpp_context_complete_and_free (ctx);
+    /* Received CONNECTION_FAILED or DISCONNECTED during a connection attempt,
+     * so return a failed error. Note that if the cancellable has been cancelled
+     * already, a cancelled error would be returned instead. */
+    g_task_return_new_error (task, MM_CORE_ERROR, MM_CORE_ERROR_FAILED, "Call setup failed");
+    g_object_unref (task);
 }
 
 static gboolean
 connect_timed_out_cb (MMBroadbandBearerHso *self)
 {
+    GTask           *task;
     Dial3gppContext *ctx;
-
-    /* Recover context and remove it from the private info */
-    ctx = self->priv->connect_pending;
-    self->priv->connect_pending = NULL;
-
-    /* Remove cancellation, if found */
-    if (self->priv->connect_cancellable_id) {
-        g_cancellable_disconnect (ctx->cancellable,
-                                  self->priv->connect_cancellable_id);
-        self->priv->connect_cancellable_id = 0;
-    }
-
-    /* Remove closed port watch, if found */
-    if (ctx && self->priv->connect_port_closed_id) {
-        g_signal_handler_disconnect (ctx->primary, self->priv->connect_port_closed_id);
-        self->priv->connect_port_closed_id = 0;
-    }
 
     /* Cleanup timeout ID */
     self->priv->connect_pending_id = 0;
 
-    /* If we were cancelled, prefer that error */
-    if (ctx->saved_error) {
-        g_simple_async_result_take_error (ctx->result, ctx->saved_error);
-        ctx->saved_error = NULL;
-    } else
-        g_simple_async_result_set_error (ctx->result,
-                                         MM_MOBILE_EQUIPMENT_ERROR,
-                                         MM_MOBILE_EQUIPMENT_ERROR_NETWORK_TIMEOUT,
-                                         "Connection attempt timed out");
+    /* Recover task and own it */
+    task = self->priv->connect_pending;
+    self->priv->connect_pending = NULL;
+    g_assert (task);
+
+    ctx = g_task_get_task_data (task);
+
+    /* Remove closed port watch, if found */
+    if (self->priv->connect_port_closed_id) {
+        g_signal_handler_disconnect (ctx->primary, self->priv->connect_port_closed_id);
+        self->priv->connect_port_closed_id = 0;
+    }
+
+    /* Setup error to return after the reset */
+    g_assert (!ctx->saved_error);
+    ctx->saved_error = g_error_new (MM_MOBILE_EQUIPMENT_ERROR,
+                                    MM_MOBILE_EQUIPMENT_ERROR_NETWORK_TIMEOUT,
+                                    "Connection attempt timed out");
 
     /* It's probably pointless to try to reset this here, but anyway... */
-    connect_reset (ctx);
+    connect_reset (task);
 
     return G_SOURCE_REMOVE;
 }
 
 static void
-connect_cancelled_cb (GCancellable *cancellable,
-                      MMBroadbandBearerHso *self)
-{
-    Dial3gppContext *ctx;
-
-    /* Recover context but DON'T remove it from the private info */
-    ctx = self->priv->connect_pending;
-
-    /* Remove the cancellable
-     * NOTE: we shouldn't remove the timeout yet. We still need to wait
-     * to get connected before running the explicit connection reset */
-    self->priv->connect_cancellable_id = 0;
-
-    /* Store cancelled error */
-    g_assert (dial_3gpp_context_set_error_if_cancelled (ctx, &ctx->saved_error));
-
-    /* We cannot reset right here, we need to wait for the connection
-     * attempt to finish */
-}
-
-static void
-forced_close_cb (MMPortSerial *port,
-                 MMBroadbandBearerHso *self)
+forced_close_cb (MMBroadbandBearerHso *self)
 {
     /* Just treat the forced close event as any other unsolicited message */
     mm_base_bearer_report_connection_status (MM_BASE_BEARER (self),
@@ -466,77 +394,90 @@ forced_close_cb (MMPortSerial *port,
 }
 
 static void
-activate_ready (MMBaseModem *modem,
-                GAsyncResult *res,
+activate_ready (MMBaseModem          *modem,
+                GAsyncResult         *res,
                 MMBroadbandBearerHso *self)
 {
+    GTask           *task;
     Dial3gppContext *ctx;
-    GError *error = NULL;
+    GError          *error = NULL;
 
-    /* Try to recover the connection context. If none found, it means the
-     * context was already completed and we have nothing else to do. */
-    ctx = self->priv->connect_pending;
+    task = self->priv->connect_pending;
+    self->priv->connect_pending = NULL;
 
-    /* Balance refcount with the extra ref we passed to command_full() */
-    g_object_unref (self);
-
-    if (!ctx) {
+    /* Try to recover the connection task. If none found, it means the
+     * task was already completed and we have nothing else to do.
+     * But note that we won't take owneship of the task yet! */
+    if (!task) {
         mm_dbg ("Connection context was finished already by an unsolicited message");
-
         /* Run _finish() to finalize the async call, even if we don't care
-         * the result */
+         * about the result */
         mm_base_modem_at_command_full_finish (modem, res, NULL);
-        return;
+        goto out;
     }
 
     /* From now on, if we get cancelled, we'll need to run the connection
      * reset ourselves just in case */
 
+    /* Errors on the dial command are fatal */
     if (!mm_base_modem_at_command_full_finish (modem, res, &error)) {
-        g_simple_async_result_take_error (ctx->result, error);
-        dial_3gpp_context_complete_and_free (ctx);
-        return;
+        g_task_return_error (task, error);
+        g_object_unref (task);
+        goto out;
     }
 
-    /* We will now setup a timeout so that we don't wait forever to get the
-     * connection on */
+    /* Track the task again */
+    self->priv->connect_pending = task;
+
+    /* We will now setup a timeout and keep the context in the bearer's private.
+     * Reports of modem being connected will arrive via unsolicited messages.
+     * This timeout should be long enough. Actually... ideally should never get
+     * reached. */
     self->priv->connect_pending_id = g_timeout_add_seconds (30,
                                                             (GSourceFunc)connect_timed_out_cb,
                                                             self);
-    self->priv->connect_cancellable_id = g_cancellable_connect (ctx->cancellable,
-                                                                G_CALLBACK (connect_cancelled_cb),
-                                                                self,
-                                                                NULL);
 
     /* If we get the port closed, we treat as a connect error */
-    self->priv->connect_port_closed_id = g_signal_connect (ctx->primary,
-                                                           "forced-close",
-                                                           G_CALLBACK (forced_close_cb),
-                                                           self);
+    ctx = g_task_get_task_data (task);
+    self->priv->connect_port_closed_id = g_signal_connect_swapped (ctx->primary,
+                                                                   "forced-close",
+                                                                   G_CALLBACK (forced_close_cb),
+                                                                   self);
+
+ out:
+    /* Balance refcount with the extra ref we passed to command_full() */
+    g_object_unref (self);
 }
 
-static void authenticate (Dial3gppContext *ctx);
+static void authenticate (GTask *task);
 
 static void
-authenticate_ready (MMBaseModem *modem,
+authenticate_ready (MMBaseModem  *modem,
                     GAsyncResult *res,
-                    Dial3gppContext *ctx)
+                    GTask        *task)
 {
-    gchar *command;
+    MMBroadbandBearerHso *self;
+    Dial3gppContext      *ctx;
+    gchar                *command;
 
     /* If cancelled, complete */
-    if (dial_3gpp_context_complete_and_free_if_cancelled (ctx))
+    if (g_task_return_error_if_cancelled (task)) {
+        g_object_unref (task);
         return;
+    }
+
+    self = g_task_get_source_object (task);
+    ctx  = g_task_get_task_data     (task);
 
     if (!mm_base_modem_at_command_full_finish (modem, res, NULL)) {
         /* Try the next auth command */
         ctx->auth_idx++;
-        authenticate (ctx);
+        authenticate (task);
         return;
     }
 
     /* Store which auth command worked, for next attempts */
-    ctx->self->priv->auth_idx = ctx->auth_idx;
+    self->priv->auth_idx = ctx->auth_idx;
 
     /* The unsolicited response to AT_OWANCALL may come before the OK does.
      * We will keep the connection context in the bearer private data so
@@ -544,12 +485,11 @@ authenticate_ready (MMBaseModem *modem,
      * also that we do NOT pass the ctx to the GAsyncReadyCallback, as it
      * may not be valid any more when the callback is called (it may be
      * already completed in the unsolicited handling) */
-    g_assert (ctx->self->priv->connect_pending == NULL);
-    ctx->self->priv->connect_pending = ctx;
+    g_assert (self->priv->connect_pending == NULL);
+    self->priv->connect_pending = task;
 
     /* Success, activate the PDP context and start the data session */
-    command = g_strdup_printf ("AT_OWANCALL=%d,1,1",
-                               ctx->cid);
+    command = g_strdup_printf ("AT_OWANCALL=%d,1,1", ctx->cid);
     mm_base_modem_at_command_full (ctx->modem,
                                    ctx->primary,
                                    command,
@@ -557,8 +497,8 @@ authenticate_ready (MMBaseModem *modem,
                                    FALSE,
                                    FALSE, /* raw */
                                    NULL, /* cancellable */
-                                   (GAsyncReadyCallback)activate_ready,
-                                   g_object_ref (ctx->self)); /* we pass the bearer object! */
+                                   (GAsyncReadyCallback) activate_ready,
+                                   g_object_ref (self)); /* we pass the bearer object! */
     g_free (command);
 }
 
@@ -572,25 +512,30 @@ const gchar *auth_commands[] = {
 };
 
 static void
-authenticate (Dial3gppContext *ctx)
+authenticate (GTask *task)
 {
-    gchar *command;
-    const gchar *user;
-    const gchar *password;
-    MMBearerAllowedAuth allowed_auth;
+    MMBroadbandBearerHso *self;
+    Dial3gppContext      *ctx;
+    gchar                *command;
+    const gchar          *user;
+    const gchar          *password;
+    MMBearerAllowedAuth   allowed_auth;
+
+    self = g_task_get_source_object (task);
+    ctx  = g_task_get_task_data     (task);
 
     if (!auth_commands[ctx->auth_idx]) {
-        g_simple_async_result_set_error (ctx->result,
-                                         MM_CORE_ERROR,
-                                         MM_CORE_ERROR_FAILED,
-                                         "Couldn't run HSO authentication");
-        dial_3gpp_context_complete_and_free (ctx);
+        g_task_return_new_error (task,
+                                 MM_CORE_ERROR,
+                                 MM_CORE_ERROR_FAILED,
+                                 "Couldn't run HSO authentication");
+        g_object_unref (task);
         return;
     }
 
-    user = mm_bearer_properties_get_user (mm_base_bearer_peek_config (MM_BASE_BEARER (ctx->self)));
-    password = mm_bearer_properties_get_password (mm_base_bearer_peek_config (MM_BASE_BEARER (ctx->self)));
-    allowed_auth = mm_bearer_properties_get_allowed_auth (mm_base_bearer_peek_config (MM_BASE_BEARER (ctx->self)));
+    user         = mm_bearer_properties_get_user         (mm_base_bearer_peek_config (MM_BASE_BEARER (self)));
+    password     = mm_bearer_properties_get_password     (mm_base_bearer_peek_config (MM_BASE_BEARER (self)));
+    allowed_auth = mm_bearer_properties_get_allowed_auth (mm_base_bearer_peek_config (MM_BASE_BEARER (self)));
 
     /* Both user and password are required; otherwise firmware returns an error */
     if (!user || !password || allowed_auth == MM_BEARER_ALLOWED_AUTH_NONE) {
@@ -601,7 +546,7 @@ authenticate (Dial3gppContext *ctx)
     } else {
         gchar *quoted_user;
         gchar *quoted_password;
-        guint hso_auth;
+        guint  hso_auth;
 
         if (allowed_auth == MM_BEARER_ALLOWED_AUTH_UNKNOWN) {
             mm_dbg ("Using default (PAP) authentication method");
@@ -616,18 +561,17 @@ authenticate (Dial3gppContext *ctx)
             gchar *str;
 
             str = mm_bearer_allowed_auth_build_string_from_mask (allowed_auth);
-            g_simple_async_result_set_error (
-                ctx->result,
-                MM_CORE_ERROR,
-                MM_CORE_ERROR_UNSUPPORTED,
-                "Cannot use any of the specified authentication methods (%s)",
-                str);
+            g_task_return_new_error (task,
+                                     MM_CORE_ERROR,
+                                     MM_CORE_ERROR_UNSUPPORTED,
+                                     "Cannot use any of the specified authentication methods (%s)",
+                                     str);
+            g_object_unref (task);
             g_free (str);
-            dial_3gpp_context_complete_and_free (ctx);
             return;
         }
 
-        quoted_user = mm_port_serial_at_quote_string (user);
+        quoted_user     = mm_port_serial_at_quote_string (user);
         quoted_password = mm_port_serial_at_quote_string (password);
         command = g_strdup_printf ("%s=%d,%u,%s,%s",
                                    auth_commands[ctx->auth_idx],
@@ -647,51 +591,49 @@ authenticate (Dial3gppContext *ctx)
                                    FALSE, /* raw */
                                    NULL, /* cancellable */
                                    (GAsyncReadyCallback)authenticate_ready,
-                                   ctx);
+                                   task);
     g_free (command);
 }
 
 static void
-dial_3gpp (MMBroadbandBearer *self,
-           MMBaseModem *modem,
-           MMPortSerialAt *primary,
-           guint cid,
-           GCancellable *cancellable,
-           GAsyncReadyCallback callback,
-           gpointer user_data)
+dial_3gpp (MMBroadbandBearer   *_self,
+           MMBaseModem         *modem,
+           MMPortSerialAt      *primary,
+           guint                cid,
+           GCancellable        *cancellable,
+           GAsyncReadyCallback  callback,
+           gpointer             user_data)
 {
-    Dial3gppContext *ctx;
+    MMBroadbandBearerHso *self = MM_BROADBAND_BEARER_HSO (_self);
+    GTask                *task;
+    Dial3gppContext      *ctx;
 
     g_assert (primary != NULL);
 
+    task = g_task_new (self, cancellable, callback, user_data);
+
     ctx = g_slice_new0 (Dial3gppContext);
-    ctx->self = g_object_ref (self);
-    ctx->modem = g_object_ref (modem);
+    ctx->modem   = g_object_ref (modem);
     ctx->primary = g_object_ref (primary);
-    ctx->cid = cid;
-    ctx->result = g_simple_async_result_new (G_OBJECT (self),
-                                             callback,
-                                             user_data,
-                                             dial_3gpp);
-    ctx->cancellable = g_object_ref (cancellable);
+    ctx->cid     = cid;
+    g_task_set_task_data (task, ctx, (GDestroyNotify)dial_3gpp_context_free);
 
     /* Always start with the index that worked last time
      * (will be 0 the first time)*/
-    ctx->auth_idx = ctx->self->priv->auth_idx;
+    ctx->auth_idx = self->priv->auth_idx;
 
     /* We need a net data port */
     ctx->data = mm_base_modem_get_best_data_port (modem, MM_PORT_TYPE_NET);
     if (!ctx->data) {
-        g_simple_async_result_set_error (
-            ctx->result,
-            MM_CORE_ERROR,
-            MM_CORE_ERROR_NOT_FOUND,
-            "No valid data port found to launch connection");
-        dial_3gpp_context_complete_and_free (ctx);
+        g_task_return_new_error (task,
+                                 MM_CORE_ERROR,
+                                 MM_CORE_ERROR_NOT_FOUND,
+                                 "No valid data port found to launch connection");
+        g_object_unref (task);
         return;
     }
 
-    authenticate (ctx);
+    authenticate (task);
 }
 
 /*****************************************************************************/

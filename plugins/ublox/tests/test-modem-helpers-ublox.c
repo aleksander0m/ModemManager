@@ -1087,15 +1087,15 @@ test_uiproute_response (void)
     GError *error = NULL;
     gboolean result;
 
-    result = mm_ublox_parse_uiproute_response_find_default_route_for_ipaddr (response, "10.156.9.115", &error);
+    result = mm_ublox_parse_uiproute_response_find_default_route_for_cid (response, 2, &error);
     g_assert_no_error (error);
     g_assert (result);
 
-    result = mm_ublox_parse_uiproute_response_find_default_route_for_ipaddr (response, "10.156.88.200", &error);
+    result = mm_ublox_parse_uiproute_response_find_default_route_for_cid (response, 1, &error);
     g_assert_no_error (error);
     g_assert (result);
 
-    result = mm_ublox_parse_uiproute_response_find_default_route_for_ipaddr (response, "10.156.88.201", &error);
+    result = mm_ublox_parse_uiproute_response_find_default_route_for_cid (response, 3, &error);
     g_assert_error (error, MM_CORE_ERROR, MM_CORE_ERROR_NOT_FOUND);
     g_assert (!result);
 }

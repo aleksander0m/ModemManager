@@ -71,7 +71,6 @@ typedef struct {
     guint                   secondary_i;
     /* For route settings */
     gchar                  *unquoted_apn;
-    gchar                  *address;
     GList                  *apn_destinations;
     /* For IPv4 settings */
     MMBearerIpConfig       *ip_config;
@@ -82,7 +81,6 @@ common_connect_context_free (CommonConnectContext *ctx)
 {
     g_list_free_full (ctx->apn_destinations, (GDestroyNotify) mm_ublox_apn_destination_free);
     g_free (ctx->unquoted_apn);
-    g_free (ctx->address);
     if (ctx->ip_config)
         g_object_unref (ctx->ip_config);
     if (ctx->data)
@@ -400,12 +398,12 @@ uiproute_add_destination (GTask *task)
     /* Add route */
     if (next_destination->netmask) {
         mm_dbg ("Adding default route for network %s/%s...", next_destination->address, next_destination->netmask);
-        cmd = g_strdup_printf ("+UIPROUTE=\"add -net %s gw %s netmask %s dev inm%u\"",
-                               next_destination->address, ctx->address, next_destination->netmask, ctx->cid - 1);
+        cmd = g_strdup_printf ("+UIPROUTE=\"add -net %s netmask %s dev inm%u\"",
+                               next_destination->address, next_destination->netmask, ctx->cid - 1);
     } else {
         mm_dbg ("Adding default route for host %s...", next_destination->address);
-        cmd = g_strdup_printf ("+UIPROUTE=\"add -host %s gw %s dev inm%u\"",
-                               next_destination->address, ctx->address, ctx->cid - 1);
+        cmd = g_strdup_printf ("+UIPROUTE=\"add -host %s dev inm%u\"",
+                               next_destination->address, ctx->cid - 1);
     }
     mm_base_modem_at_command (MM_BASE_MODEM (ctx->modem),
                               cmd,
@@ -444,9 +442,9 @@ uiproute_del_default (GTask *task)
 
     ctx = (CommonConnectContext *) g_task_get_task_data (task);
 
-    mm_dbg ("Removing default route through %s...", ctx->address);
     g_assert (ctx->cid >= 1);
-    cmd = g_strdup_printf ("+UIPROUTE=\"del -net default gw %s netmask 0.0.0.0 dev inm%u\"", ctx->address, ctx->cid - 1);
+    mm_dbg ("Removing default route through inm%u...", ctx->cid);
+    cmd = g_strdup_printf ("+UIPROUTE=\"del -net default dev inm%u\"", ctx->cid - 1);
     mm_base_modem_at_command (MM_BASE_MODEM (ctx->modem),
                               cmd,
                               10,
@@ -475,7 +473,7 @@ uiproute_ready (MMBaseModem  *modem,
         return;
     }
 
-    if (!mm_ublox_parse_uiproute_response_find_default_route_for_ipaddr (response, ctx->address, &error)) {
+    if (!mm_ublox_parse_uiproute_response_find_default_route_for_cid (response, ctx->cid, &error)) {
         mm_dbg ("Couldn't find default route: %s", error->message);
         g_error_free (error);
         /* Try to add destination right away */
@@ -487,66 +485,6 @@ uiproute_ready (MMBaseModem  *modem,
 }
 
 static void
-cgpaddr_ready (MMBaseModem  *modem,
-               GAsyncResult *res,
-               GTask        *task)
-{
-    const gchar          *response;
-    GError               *error = NULL;
-    CommonConnectContext *ctx;
-    GList                *pdp_addresses;
-    GList                *l;
-
-    ctx = (CommonConnectContext *) g_task_get_task_data (task);
-
-    response = mm_base_modem_at_command_finish (modem, res, &error);
-    if (!response) {
-        g_task_return_error (task, error);
-        g_object_unref (task);
-        return;
-    }
-
-    pdp_addresses = mm_3gpp_parse_cgpaddr_exec_response (response, &error);
-    if (!pdp_addresses) {
-        g_task_return_error (task, error);
-        g_object_unref (task);
-        return;
-    }
-
-    for (l = pdp_addresses; l; l = g_list_next (l)) {
-        const MM3gppPdpContextAddress *item;
-
-        item = l->data;
-        if (ctx->cid == item->cid) {
-            if (g_str_equal (item->address, "0.0.0.0")) {
-                mm_dbg ("Invalid IP address reported for PDP context %u: %s", ctx->cid, item->address);
-            } else {
-                mm_dbg ("IP address for PDP context %u found: %s", ctx->cid, item->address);
-                ctx->address = g_strdup (item->address);
-            }
-            break;
-        }
-    }
-
-    mm_3gpp_pdp_context_address_list_free (pdp_addresses);
-
-    if (!ctx->address) {
-        g_task_return_new_error (task, MM_CORE_ERROR, MM_CORE_ERROR_FAILED,
-                                 "No IP address specified for PDP context %u", ctx->cid);
-        g_object_unref (task);
-        return;
-    }
-
-    mm_dbg ("querying current routes...");
-    mm_base_modem_at_command (MM_BASE_MODEM (ctx->modem),
-                              "+UIPROUTE?",
-                              10,
-                              FALSE,
-                              (GAsyncReadyCallback) uiproute_ready,
-                              task);
-}
-
-static void
 cgact_activate_ready (MMBaseModem  *modem,
                       GAsyncResult *res,
                       GTask        *task)
@@ -554,7 +492,6 @@ cgact_activate_ready (MMBaseModem  *modem,
     const gchar          *response;
     GError               *error = NULL;
     CommonConnectContext *ctx;
-    gchar                *cmd;
 
     ctx = (CommonConnectContext *) g_task_get_task_data (task);
 
@@ -579,15 +516,13 @@ cgact_activate_ready (MMBaseModem  *modem,
         return;
     }
 
-    mm_dbg ("querying PDP context %u IP address...", ctx->cid);
-    cmd = g_strdup_printf ("+CGPADDR=%u", ctx->cid);
+    mm_dbg ("querying current routes...");
     mm_base_modem_at_command (MM_BASE_MODEM (ctx->modem),
-                              cmd,
+                              "+UIPROUTE?",
                               10,
                               FALSE,
-                              (GAsyncReadyCallback) cgpaddr_ready,
+                              (GAsyncReadyCallback) uiproute_ready,
                               task);
-    g_free (cmd);
 }
 
 static void

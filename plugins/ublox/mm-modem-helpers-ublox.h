@@ -175,9 +175,9 @@ gboolean mm_ublox_parse_ugcntrd_response_for_cid (const gchar  *response,
 /*****************************************************************************/
 /* +UIPROUTE response parser */
 
-gboolean mm_ublox_parse_uiproute_response_find_default_route_for_ipaddr (const gchar  *reply,
-                                                                         const gchar  *ipaddr,
-                                                                         GError      **error);
+gboolean mm_ublox_parse_uiproute_response_find_default_route_for_cid (const gchar  *reply,
+                                                                      guint         cid,
+                                                                      GError      **error);
 
 /*****************************************************************************/
 /* APN destinations configuration */

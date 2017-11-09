@@ -1482,17 +1482,20 @@ out:
  */
 
 gboolean
-mm_ublox_parse_uiproute_response_find_default_route_for_ipaddr (const gchar  *reply,
-                                                                const gchar  *ipaddr,
-                                                                GError      **error)
+mm_ublox_parse_uiproute_response_find_default_route_for_cid (const gchar  *reply,
+                                                             guint         cid,
+                                                             GError      **error)
 {
     GError     *inner_error = NULL;
     GRegex     *r;
     GMatchInfo *match_info;
     gboolean    found = FALSE;
+    gchar      *expected_iface = NULL;
 
-    if (!reply || !reply[0])
+    if (!reply || !reply[0] || cid < 1)
         goto out;
+
+    expected_iface = g_strdup_printf ("inm%u", cid - 1);
 
     reply = mm_strip_tag (reply, "+UIPROUTE: Kernel IP routing table");
 
@@ -1503,39 +1506,41 @@ mm_ublox_parse_uiproute_response_find_default_route_for_ipaddr (const gchar  *re
     g_regex_match_full (r, reply, strlen (reply), 0, 0, &match_info, &inner_error);
     while (!inner_error && g_match_info_matches (match_info)) {
         gchar *entry_destination = NULL;
-        gchar *entry_address = NULL;
+        gchar *entry_iface = NULL;
 
         if (!(entry_destination = mm_get_string_unquoted_from_match_info (match_info, 1))) {
             inner_error = g_error_new (MM_CORE_ERROR,
                                        MM_CORE_ERROR_FAILED,
                                        "Couldn't parse destination from reply: '%s'",
                                        reply);
-            break;
+            goto next;
         }
 
         if (!g_str_equal (entry_destination, "default"))
             goto next;
 
-        if (!(entry_address = mm_get_string_unquoted_from_match_info (match_info, 2))) {
+        if (!(entry_iface = mm_get_string_unquoted_from_match_info (match_info, 8))) {
             inner_error = g_error_new (MM_CORE_ERROR,
                                        MM_CORE_ERROR_FAILED,
-                                       "Couldn't parse address from reply: '%s'",
+                                       "Couldn't parse interface from reply: '%s'",
                                        reply);
-            break;
+            goto next;
         }
 
-        if (g_str_equal (entry_address, ipaddr))
+        if (g_str_equal (entry_iface, expected_iface))
             found = TRUE;
 
     next:
         g_free (entry_destination);
-        g_free (entry_address);
+        g_free (entry_iface);
 
         if (found)
             break;
 
         g_match_info_next (match_info, &inner_error);
     }
+
+    g_free (expected_iface);
 
     if (match_info)
         g_match_info_free (match_info);

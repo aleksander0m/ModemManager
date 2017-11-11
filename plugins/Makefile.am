@@ -976,6 +976,18 @@ dist_udevrules_DATA += dell/77-mm-dell-port-types.rules
 AM_CFLAGS += -DTESTUDEVRULESDIR_DELL=\"${srcdir}/dell\"
 
 ################################################################################
+# plugin: quectel
+################################################################################
+
+pkglib_LTLIBRARIES += libmm-plugin-quectel.la
+libmm_plugin_quectel_la_SOURCES = \
+	quectel/mm-plugin-quectel.c \
+	quectel/mm-plugin-quectel.h \
+	$(NULL)
+libmm_plugin_quectel_la_CPPFLAGS = $(PLUGIN_COMMON_COMPILER_FLAGS)
+libmm_plugin_quectel_la_LDFLAGS  = $(PLUGIN_COMMON_LINKER_FLAGS)
+
+################################################################################
 # udev rules tester
 ################################################################################
 

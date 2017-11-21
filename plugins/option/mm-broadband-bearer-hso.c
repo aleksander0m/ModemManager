@@ -286,38 +286,16 @@ connect_reset (GTask *task)
 }
 
 static void
-report_connection_status (MMBaseBearer             *_self,
-                          MMBearerConnectionStatus  status)
+process_pending_connect_attempt (MMBroadbandBearerHso     *self,
+                                 MMBearerConnectionStatus  status)
 {
-    MMBroadbandBearerHso *self = MM_BROADBAND_BEARER_HSO (_self);
-    GTask                *task;
-    Dial3gppContext      *ctx;
+    GTask           *task;
+    Dial3gppContext *ctx;
 
-    g_assert (status == MM_BEARER_CONNECTION_STATUS_CONNECTED ||
-              status == MM_BEARER_CONNECTION_STATUS_CONNECTION_FAILED ||
-              status == MM_BEARER_CONNECTION_STATUS_DISCONNECTED);
-
-    /* Recover task (if any) and remove both cancellation and timeout (if any)*/
+    /* Recover task and remove both cancellation and timeout (if any)*/
+    g_assert (self->priv->connect_pending);
     task = self->priv->connect_pending;
     self->priv->connect_pending = NULL;
-
-    /* Connection status reported but no connection attempt? */
-    if (!task) {
-        g_assert (!self->priv->connect_pending_id);
-        g_assert (!self->priv->connect_port_closed_id);
-
-        mm_dbg ("Received spontaneous _OWANCALL (%s)",
-                mm_bearer_connection_status_get_string (status));
-
-        if (status == MM_BEARER_CONNECTION_STATUS_DISCONNECTED) {
-            /* If no connection attempt on-going, make sure we mark ourselves as
-             * disconnected */
-            MM_BASE_BEARER_CLASS (mm_broadband_bearer_hso_parent_class)->report_connection_status (
-                _self,
-                status);
-        }
-        return;
-    }
 
     ctx = g_task_get_task_data (task);
 
@@ -713,6 +691,36 @@ disconnect_3gpp (MMBroadbandBearer *self,
                                    (GAsyncReadyCallback)disconnect_owancall_ready,
                                    task);
     g_free (command);
+}
+
+/*****************************************************************************/
+
+static void
+report_connection_status (MMBaseBearer             *_self,
+                          MMBearerConnectionStatus  status)
+{
+    MMBroadbandBearerHso *self = MM_BROADBAND_BEARER_HSO (_self);
+
+    g_assert (status == MM_BEARER_CONNECTION_STATUS_CONNECTED ||
+              status == MM_BEARER_CONNECTION_STATUS_CONNECTION_FAILED ||
+              status == MM_BEARER_CONNECTION_STATUS_DISCONNECTED);
+
+    /* Process pending connection attempt */
+    if (self->priv->connect_pending) {
+        process_pending_connect_attempt (self, status);
+        return;
+    }
+
+    mm_dbg ("Received spontaneous _OWANCALL (%s)",
+            mm_bearer_connection_status_get_string (status));
+
+    if (status == MM_BEARER_CONNECTION_STATUS_DISCONNECTED) {
+        /* If no connection attempt on-going, make sure we mark ourselves as
+         * disconnected */
+        MM_BASE_BEARER_CLASS (mm_broadband_bearer_hso_parent_class)->report_connection_status (
+            _self,
+            status);
+    }
 }
 
 /*****************************************************************************/

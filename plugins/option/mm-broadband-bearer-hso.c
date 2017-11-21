@@ -433,7 +433,7 @@ activate_ready (MMBaseModem          *modem,
      * Reports of modem being connected will arrive via unsolicited messages.
      * This timeout should be long enough. Actually... ideally should never get
      * reached. */
-    self->priv->connect_pending_id = g_timeout_add_seconds (30,
+    self->priv->connect_pending_id = g_timeout_add_seconds (60,
                                                             (GSourceFunc)connect_timed_out_cb,
                                                             self);
 

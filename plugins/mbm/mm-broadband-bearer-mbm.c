@@ -13,13 +13,14 @@
  * Copyright (C) 2008 - 2010 Ericsson AB
  * Copyright (C) 2009 - 2012 Red Hat, Inc.
  * Copyright (C) 2012 Lanedo GmbH
+ * Copyright (C) 2017 Aleksander Morgado <aleksander@aleksander.es>
  *
  * Author: Per Hallsmark <per.hallsmark@ericsson.com>
  *         Bjorn Runaker <bjorn.runaker@ericsson.com>
  *         Torgny Johansson <torgny.johansson@ericsson.com>
  *         Jonas Sjöquist <jonas.sjoquist@ericsson.com>
  *         Dan Williams <dcbw@redhat.com>
- *         Aleksander Morgado <aleksander@lanedo.com>
+ *         Aleksander Morgado <aleksander@aleksander.es>
  */
 
 #include <config.h>
@@ -42,229 +43,208 @@
 #include "mm-modem-helpers-mbm.h"
 #include "mm-daemon-enums-types.h"
 
-G_DEFINE_TYPE (MMBroadbandBearerMbm, mm_broadband_bearer_mbm, MM_TYPE_BROADBAND_BEARER);
+G_DEFINE_TYPE (MMBroadbandBearerMbm, mm_broadband_bearer_mbm, MM_TYPE_BROADBAND_BEARER)
 
 struct _MMBroadbandBearerMbmPrivate {
-    gpointer connect_pending;
-    gpointer disconnect_pending;
+    GTask *connect_pending;
+    GTask *disconnect_pending;
 };
-
-/*****************************************************************************/
-
-static void dial_3gpp_report_connection_status  (gpointer data,
-                                                 MMBearerConnectionStatus status);
-static void disconnect_report_connection_status (gpointer data,
-                                                 MMBearerConnectionStatus status);
-
-static void
-report_connection_status (MMBaseBearer *bearer,
-                          MMBearerConnectionStatus status)
-{
-    MMBroadbandBearerMbm *self = MM_BROADBAND_BEARER_MBM (bearer);
-
-    g_assert (status == MM_BEARER_CONNECTION_STATUS_CONNECTED ||
-              status == MM_BEARER_CONNECTION_STATUS_DISCONNECTED);
-
-    mm_dbg ("Received unsolicited *E2NAP (%s)",
-            mm_bearer_connection_status_get_string (status));
-
-    if (self->priv->connect_pending) {
-        /* Save unsolicited status for the pending connection attempt */
-        dial_3gpp_report_connection_status (self->priv->connect_pending, status);
-    } else if (self->priv->disconnect_pending) {
-        /* Save unsolicited status for the pending disconnection attempt */
-        disconnect_report_connection_status (self->priv->disconnect_pending, status);
-    } else {
-        if (status == MM_BEARER_CONNECTION_STATUS_DISCONNECTED) {
-            MM_BASE_BEARER_CLASS (mm_broadband_bearer_mbm_parent_class)->report_connection_status (
-                bearer,
-                status);
-        }
-    }
-}
 
 /*****************************************************************************/
 /* 3GPP Dialing (sub-step of the 3GPP Connection sequence) */
 
 typedef struct {
-    MMBroadbandBearerMbm *self;
-    MMBaseModem *modem;
+    MMBaseModem    *modem;
     MMPortSerialAt *primary;
-    guint cid;
-    GCancellable *cancellable;
-    MMPort *data;
-    GSimpleAsyncResult *result;
-    guint poll_count;
-    guint poll_id;
-    MMBearerConnectionStatus e2nap_status;
+    guint           cid;
+    MMPort         *data;
+    guint           poll_count;
+    guint           poll_id;
+    GError         *saved_error;
 } Dial3gppContext;
 
 static void
-dial_3gpp_context_complete_and_free (Dial3gppContext *ctx)
+dial_3gpp_context_free (Dial3gppContext *ctx)
 {
-    /* Clear bearer object pointer to this connect context */
-    if (ctx->self->priv->connect_pending == ctx)
-        ctx->self->priv->connect_pending = NULL;
-
-    g_simple_async_result_complete_in_idle (ctx->result);
+    g_assert (!ctx->poll_id);
+    g_assert (!ctx->saved_error);
     g_clear_object (&ctx->data);
-    if (ctx->poll_id)
-        g_source_remove (ctx->poll_id);
-    g_object_unref (ctx->cancellable);
-    g_object_unref (ctx->result);
-    g_object_unref (ctx->primary);
-    g_object_unref (ctx->modem);
-    g_object_unref (ctx->self);
+    g_clear_object (&ctx->primary);
+    g_clear_object (&ctx->modem);
     g_slice_free (Dial3gppContext, ctx);
 }
 
 static MMPort *
-dial_3gpp_finish (MMBroadbandBearer *self,
-                  GAsyncResult *res,
-                  GError **error)
+dial_3gpp_finish (MMBroadbandBearer  *self,
+                  GAsyncResult       *res,
+                  GError            **error)
 {
-    if (g_simple_async_result_propagate_error (G_SIMPLE_ASYNC_RESULT (res), error))
-        return NULL;
-
-    return MM_PORT (g_object_ref (g_simple_async_result_get_op_res_gpointer (G_SIMPLE_ASYNC_RESULT (res))));
+    return MM_PORT (g_task_propagate_pointer (G_TASK (res), error));
 }
 
 static void
-dial_3gpp_report_connection_status (gpointer data,
-                                    MMBearerConnectionStatus status)
+connect_reset_ready (MMBroadbandBearer *self,
+                     GAsyncResult      *res,
+                     GTask             *task)
 {
-    Dial3gppContext *ctx = data;
+    Dial3gppContext *ctx;
 
-    g_assert (ctx);
-    ctx->e2nap_status = status;
+    ctx = g_task_get_task_data (task);
+
+    MM_BROADBAND_BEARER_GET_CLASS (self)->disconnect_3gpp_finish (self, res, NULL);
+
+    /* When reset is requested, it was either cancelled or an error was stored */
+    if (!g_task_return_error_if_cancelled (task)) {
+        g_assert (ctx->saved_error);
+        g_task_return_error (task, ctx->saved_error);
+        ctx->saved_error = NULL;
+    }
+
+    g_object_unref (task);
 }
 
 static void
-connect_error_disconnect_ready (MMBroadbandBearer *self,
-                                GAsyncResult *res,
-                                Dial3gppContext *ctx)
+connect_reset (GTask *task)
 {
-    MM_BROADBAND_BEARER_GET_CLASS (self)->disconnect_3gpp_finish (
-        self,
-        res,
-        NULL);
-    dial_3gpp_context_complete_and_free (ctx);
-}
+    MMBroadbandBearerMbm *self;
+    Dial3gppContext      *ctx;
 
-static void
-connect_error_disconnect_start (Dial3gppContext *ctx)
-{
-    /* We don't care about connect status anymore */
-    if (ctx->self->priv->connect_pending == ctx)
-        ctx->self->priv->connect_pending = NULL;
+    self = g_task_get_source_object (task);
+    ctx  = g_task_get_task_data     (task);
 
-    MM_BROADBAND_BEARER_GET_CLASS (ctx->self)->disconnect_3gpp (
-        MM_BROADBAND_BEARER (ctx->self),
+    MM_BROADBAND_BEARER_GET_CLASS (self)->disconnect_3gpp (
+        MM_BROADBAND_BEARER (self),
         MM_BROADBAND_MODEM (ctx->modem),
         ctx->primary,
         NULL,
         ctx->data,
         ctx->cid,
-        (GAsyncReadyCallback) connect_error_disconnect_ready,
-        ctx);
+        (GAsyncReadyCallback) connect_reset_ready,
+        task);
 }
-
-static gboolean
-handle_e2nap_connect_status (Dial3gppContext *ctx)
-{
-    switch (ctx->e2nap_status) {
-    case MM_BEARER_CONNECTION_STATUS_CONNECTED:
-        /* Reporting connected */
-        mm_dbg ("Connected status indicated already by an unsolicited message");
-        g_simple_async_result_set_op_res_gpointer (ctx->result,
-                                                   g_object_ref (ctx->data),
-                                                   g_object_unref);
-        dial_3gpp_context_complete_and_free (ctx);
-        return TRUE;
-    case MM_BEARER_CONNECTION_STATUS_DISCONNECTED:
-        /* Reporting disconnected */
-        mm_dbg ("Connection failure status indicated already by an unsolicited message");
-        g_simple_async_result_set_error (ctx->result,
-                                         MM_CORE_ERROR,
-                                         MM_CORE_ERROR_FAILED,
-                                         "Call setup failed");
-        dial_3gpp_context_complete_and_free (ctx);
-        return TRUE;
-    default:
-        break;
-    }
-
-    return FALSE;
-}
-
-static gboolean connect_poll_cb (Dial3gppContext *ctx);
 
 static void
-connect_poll_ready (MMBaseModem *modem,
-                    GAsyncResult *res,
-                    Dial3gppContext *ctx)
+process_pending_connect_attempt (MMBroadbandBearerMbm     *self,
+                                 MMBearerConnectionStatus  status)
 {
-    GError *error = NULL;
-    const gchar *response;
-    guint state;
+    GTask           *task;
+    Dial3gppContext *ctx;
+
+    /* Recover connection task */
+    task = self->priv->connect_pending;
+    self->priv->connect_pending = NULL;
+    g_assert (task != NULL);
+
+    ctx = g_task_get_task_data (task);
+
+    if (ctx->poll_id) {
+        g_source_remove (ctx->poll_id);
+        ctx->poll_id = 0;
+    }
+
+    /* Received 'CONNECTED' during a connection attempt? */
+    if (status == MM_BEARER_CONNECTION_STATUS_CONNECTED) {
+        /* If we wanted to get cancelled before, do it now. */
+        if (g_cancellable_is_cancelled (g_task_get_cancellable (task))) {
+            connect_reset (task);
+            return;
+        }
+
+        g_task_return_pointer (task, g_object_ref (ctx->data), g_object_unref);
+        g_object_unref (task);
+        return;
+    }
+
+    /* If we wanted to get cancelled before and now we couldn't connect,
+     * use the cancelled error and return */
+    if (g_task_return_error_if_cancelled (task)) {
+        g_object_unref (task);
+        return;
+    }
+
+    /* Otherwise, received 'DISCONNECTED' during a connection attempt? */
+    g_task_return_new_error (task, MM_CORE_ERROR, MM_CORE_ERROR_FAILED, "Call setup failed");
+    g_object_unref (task);
+}
+
+static gboolean connect_poll_cb (MMBroadbandBearerMbm *self);
+
+static void
+connect_poll_ready (MMBaseModem          *modem,
+                    GAsyncResult         *res,
+                    MMBroadbandBearerMbm *self)
+{
+    GTask           *task;
+    Dial3gppContext *ctx;
+    GError          *error = NULL;
+    const gchar     *response;
+    guint            state;
+
+    task = self->priv->connect_pending;
+    self->priv->connect_pending = NULL;
+
+    if (!task) {
+        mm_dbg ("Connection context was finished already by an unsolicited message");
+        /* Run _finish() to finalize the async call, even if we don't care
+         * the result */
+        mm_base_modem_at_command_full_finish (modem, res, NULL);
+        return;
+    }
+
+    ctx = g_task_get_task_data (task);
 
     response = mm_base_modem_at_command_full_finish (modem, res, &error);
     if (!response) {
-        g_simple_async_result_take_error (ctx->result, error);
-        connect_error_disconnect_start (ctx);
+        ctx->saved_error = error;
+        connect_reset (task);
         return;
     }
 
-    if (sscanf (response, "*ENAP: %d", &state) == 1
-        && state == 1) {
+    if (sscanf (response, "*ENAP: %d", &state) == 1 && state == 1) {
         /* Success!  Connected... */
-        g_simple_async_result_set_op_res_gpointer (ctx->result,
-                                                   g_object_ref (ctx->data),
-                                                   g_object_unref);
-        dial_3gpp_context_complete_and_free (ctx);
+        g_task_return_pointer (task, g_object_ref (ctx->data), g_object_unref);
+        g_object_unref (task);
         return;
     }
 
-    /* Process any unsolicited E2NAP disconnect notification */
-    if (handle_e2nap_connect_status (ctx))
-        return;
-
-    /* Check again in one second */
+    /* Restore pending task and check again in one second */
+    self->priv->connect_pending = task;
     g_assert (ctx->poll_id == 0);
-    ctx->poll_id = g_timeout_add_seconds (1,
-                                          (GSourceFunc)connect_poll_cb,
-                                          ctx);
+    ctx->poll_id = g_timeout_add_seconds (1, (GSourceFunc) connect_poll_cb, self);
 }
 
 static gboolean
-connect_poll_cb (Dial3gppContext *ctx)
+connect_poll_cb (MMBroadbandBearerMbm *self)
 {
+    GTask           *task;
+    Dial3gppContext *ctx;
+
+    task = self->priv->connect_pending;
+    self->priv->connect_pending = NULL;
+
+    g_assert (task);
+    ctx = g_task_get_task_data (task);
+
     ctx->poll_id = 0;
 
     /* Complete if we were cancelled */
-    if (g_cancellable_is_cancelled (ctx->cancellable)) {
-        g_simple_async_result_set_error (ctx->result,
-                                         MM_CORE_ERROR,
-                                         MM_CORE_ERROR_CANCELLED,
-                                         "Dial operation has been cancelled");
-        connect_error_disconnect_start (ctx);
+    if (g_cancellable_is_cancelled (g_task_get_cancellable (task))) {
+        connect_reset (task);
         return G_SOURCE_REMOVE;
     }
-
-    /* Process any unsolicited E2NAP status */
-    if (handle_e2nap_connect_status (ctx))
-        return G_SOURCE_REMOVE;
 
     /* Too many retries... */
     if (ctx->poll_count > 50) {
-        g_simple_async_result_set_error (ctx->result,
-                                         MM_MOBILE_EQUIPMENT_ERROR,
-                                         MM_MOBILE_EQUIPMENT_ERROR_NETWORK_TIMEOUT,
-                                         "Connection attempt timed out");
-        connect_error_disconnect_start (ctx);
+        g_assert (!ctx->saved_error);
+        ctx->saved_error = g_error_new (MM_MOBILE_EQUIPMENT_ERROR,
+                                        MM_MOBILE_EQUIPMENT_ERROR_NETWORK_TIMEOUT,
+                                        "Connection attempt timed out");
+        connect_reset (task);
         return G_SOURCE_REMOVE;
     }
 
+    /* Restore pending task and poll */
+    self->priv->connect_pending = task;
     ctx->poll_count++;
     mm_base_modem_at_command_full (ctx->modem,
                                    ctx->primary,
@@ -272,49 +252,69 @@ connect_poll_cb (Dial3gppContext *ctx)
                                    3,
                                    FALSE,
                                    FALSE, /* raw */
-                                   ctx->cancellable,
+                                   g_task_get_cancellable (task),
                                    (GAsyncReadyCallback)connect_poll_ready,
-                                   ctx);
+                                   self);
     return G_SOURCE_REMOVE;
 }
 
 static void
-activate_ready (MMBaseModem *modem,
-                GAsyncResult *res,
-                Dial3gppContext *ctx)
+activate_ready (MMBaseModem          *modem,
+                GAsyncResult         *res,
+                MMBroadbandBearerMbm *self)
 {
-    GError *error = NULL;
+    GTask           *task;
+    Dial3gppContext *ctx;
+    GError          *error = NULL;
+
+    /* Try to recover the connection context. If none found, it means the
+     * context was already completed and we have nothing else to do. */
+    task = self->priv->connect_pending;
+    self->priv->connect_pending = NULL;
+
+    if (!task) {
+        mm_dbg ("Connection context was finished already by an unsolicited message");
+        /* Run _finish() to finalize the async call, even if we don't care
+         * the result */
+        mm_base_modem_at_command_full_finish (modem, res, NULL);
+        goto out;
+    }
 
     /* From now on, if we get cancelled, we'll need to run the connection
      * reset ourselves just in case */
-
     if (!mm_base_modem_at_command_full_finish (modem, res, &error)) {
-        g_simple_async_result_take_error (ctx->result, error);
-        connect_error_disconnect_start (ctx);
-        return;
+        g_task_return_error (task, error);
+        g_object_unref (task);
+        goto out;
     }
 
-    /* Process any unsolicited E2NAP status received before the ENAP OK */
-    if (handle_e2nap_connect_status (ctx))
-        return;
+    ctx = g_task_get_task_data (task);
 
     /* No unsolicited E2NAP status yet; wait for it and periodically poll
      * to handle very old F3507g/MD300 firmware that may not send E2NAP. */
-    ctx->poll_id = g_timeout_add_seconds (1,
-                                          (GSourceFunc)connect_poll_cb,
-                                          ctx);
+    self->priv->connect_pending = task;
+    ctx->poll_id = g_timeout_add_seconds (1, (GSourceFunc)connect_poll_cb, self);
+
+ out:
+    /* Balance refcount with the extra ref we passed to command_full() */
+    g_object_unref (self);
 }
 
 static void
-activate (Dial3gppContext *ctx)
+activate (GTask *task)
 {
-    gchar *command;
+    MMBroadbandBearerMbm *self;
+    Dial3gppContext      *ctx;
+    gchar                *command;
+
+    self = g_task_get_source_object (task);
+    ctx  = g_task_get_task_data     (task);
 
     /* The unsolicited response to ENAP may come before the OK does.
      * We will keep the connection context in the bearer private data so
      * that it is accessible from the unsolicited message handler. */
-    g_assert (ctx->self->priv->connect_pending == NULL);
-    ctx->self->priv->connect_pending = ctx;
+    g_assert (self->priv->connect_pending == NULL);
+    self->priv->connect_pending = task;
 
     /* Activate the PDP context and start the data session */
     command = g_strdup_printf ("AT*ENAP=1,%d", ctx->cid);
@@ -324,36 +324,41 @@ activate (Dial3gppContext *ctx)
                                    3,
                                    FALSE,
                                    FALSE, /* raw */
-                                   ctx->cancellable,
+                                   g_task_get_cancellable (task),
                                    (GAsyncReadyCallback)activate_ready,
-                                   ctx);
+                                   g_object_ref (self)); /* we pass the bearer object! */
     g_free (command);
 }
 
 static void
-authenticate_ready (MMBaseModem *modem,
+authenticate_ready (MMBaseModem  *modem,
                     GAsyncResult *res,
-                    Dial3gppContext *ctx)
+                    GTask        *task)
 {
     GError *error = NULL;
 
     if (!mm_base_modem_at_command_full_finish (modem, res, &error)) {
-        g_simple_async_result_take_error (ctx->result, error);
-        dial_3gpp_context_complete_and_free (ctx);
+        g_task_return_error (task, error);
+        g_object_unref (task);
         return;
     }
 
-    activate (ctx);
+    activate (task);
 }
 
 static void
-authenticate (Dial3gppContext *ctx)
+authenticate (GTask *task)
 {
-    const gchar *user;
-    const gchar *password;
+    MMBroadbandBearerMbm *self;
+    Dial3gppContext      *ctx;
+    const gchar          *user;
+    const gchar          *password;
 
-    user = mm_bearer_properties_get_user (mm_base_bearer_peek_config (MM_BASE_BEARER (ctx->self)));
-    password = mm_bearer_properties_get_password (mm_base_bearer_peek_config (MM_BASE_BEARER (ctx->self)));
+    self = g_task_get_source_object (task);
+    ctx  = g_task_get_task_data     (task);
+
+    user     = mm_bearer_properties_get_user     (mm_base_bearer_peek_config (MM_BASE_BEARER (self)));
+    password = mm_bearer_properties_get_password (mm_base_bearer_peek_config (MM_BASE_BEARER (self)));
 
     /* Both user and password are required; otherwise firmware returns an error */
     if (user || password) {
@@ -379,55 +384,52 @@ authenticate (Dial3gppContext *ctx)
                                        3,
                                        FALSE,
                                        FALSE, /* raw */
-                                       ctx->cancellable,
-                                       (GAsyncReadyCallback)authenticate_ready,
-                                       ctx);
+                                       g_task_get_cancellable (task),
+                                       (GAsyncReadyCallback) authenticate_ready,
+                                       task);
         g_free (command);
         return;
     }
 
     mm_dbg ("Authentication not needed");
-    activate (ctx);
+    activate (task);
 }
 
 static void
-dial_3gpp (MMBroadbandBearer *self,
-           MMBaseModem *modem,
-           MMPortSerialAt *primary,
-           guint cid,
-           GCancellable *cancellable,
-           GAsyncReadyCallback callback,
-           gpointer user_data)
+dial_3gpp (MMBroadbandBearer   *_self,
+           MMBaseModem         *modem,
+           MMPortSerialAt      *primary,
+           guint                cid,
+           GCancellable        *cancellable,
+           GAsyncReadyCallback  callback,
+           gpointer             user_data)
 {
-    Dial3gppContext *ctx;
+    MMBroadbandBearerMbm *self = MM_BROADBAND_BEARER_MBM (_self);
+    GTask                *task;
+    Dial3gppContext      *ctx;
 
     g_assert (primary != NULL);
 
+    task = g_task_new (self, cancellable, callback, user_data);
+
     ctx = g_slice_new0 (Dial3gppContext);
-    ctx->self = g_object_ref (self);
-    ctx->modem = g_object_ref (modem);
+    ctx->modem   = g_object_ref (modem);
     ctx->primary = g_object_ref (primary);
-    ctx->cid = cid;
-    ctx->result = g_simple_async_result_new (G_OBJECT (self),
-                                             callback,
-                                             user_data,
-                                             dial_3gpp);
-    ctx->cancellable = g_object_ref (cancellable);
-    ctx->poll_count = 0;
+    ctx->cid     = cid;
+    g_task_set_task_data (task, ctx, (GDestroyNotify)dial_3gpp_context_free);
 
     /* We need a net data port */
     ctx->data = mm_base_modem_get_best_data_port (modem, MM_PORT_TYPE_NET);
     if (!ctx->data) {
-        g_simple_async_result_set_error (
-            ctx->result,
-            MM_CORE_ERROR,
-            MM_CORE_ERROR_NOT_FOUND,
-            "No valid data port found to launch connection");
-        dial_3gpp_context_complete_and_free (ctx);
+        g_task_return_new_error (task,
+                                 MM_CORE_ERROR,
+                                 MM_CORE_ERROR_NOT_FOUND,
+                                 "No valid data port found to launch connection");
+        g_object_unref (task);
         return;
     }
 
-    authenticate (ctx);
+    authenticate (task);
 }
 
 /*****************************************************************************/
@@ -569,116 +571,135 @@ get_ip_config_3gpp (MMBroadbandBearer *self,
 /* 3GPP disconnect */
 
 typedef struct {
-    MMBroadbandBearerMbm *self;
-    MMBaseModem *modem;
+    MMBaseModem    *modem;
     MMPortSerialAt *primary;
-    GSimpleAsyncResult *result;
-    guint poll_count;
-    guint poll_id;
-    MMBearerConnectionStatus e2nap_status;
+    guint           poll_count;
+    guint           poll_id;
 } DisconnectContext;
 
 static void
-disconnect_context_complete_and_free (DisconnectContext *ctx)
+disconnect_context_free (DisconnectContext *ctx)
 {
-    /* Clear bearer object pointer to this disconnect context */
-    if (ctx->self->priv->disconnect_pending == ctx)
-        ctx->self->priv->disconnect_pending = NULL;
-
-    g_simple_async_result_complete_in_idle (ctx->result);
-    if (ctx->poll_id)
-        g_source_remove (ctx->poll_id);
-    g_object_unref (ctx->result);
-    g_object_unref (ctx->primary);
-    g_object_unref (ctx->self);
-    g_object_unref (ctx->modem);
+    g_assert (!ctx->poll_id);
+    g_clear_object (&ctx->primary);
+    g_clear_object (&ctx->modem);
     g_free (ctx);
 }
 
 static gboolean
-disconnect_3gpp_finish (MMBroadbandBearer *self,
-                        GAsyncResult *res,
-                        GError **error)
+disconnect_3gpp_finish (MMBroadbandBearer  *self,
+                        GAsyncResult       *res,
+                        GError           **error)
 {
-    return !g_simple_async_result_propagate_error (G_SIMPLE_ASYNC_RESULT (res), error);
+    return g_task_propagate_boolean (G_TASK (res), error);
 }
 
 static void
-disconnect_report_connection_status (gpointer data,
-                                     MMBearerConnectionStatus status)
+process_pending_disconnect_attempt (MMBroadbandBearerMbm     *self,
+                                    MMBearerConnectionStatus  status)
 {
-    DisconnectContext *ctx = data;
+    GTask             *task;
+    DisconnectContext *ctx;
 
-    g_assert (ctx);
-    ctx->e2nap_status = status;
-}
+    /* Recover disconnection task */
+    task = self->priv->disconnect_pending;
+    self->priv->disconnect_pending = NULL;
+    g_assert (task != NULL);
 
-static gboolean
-handle_e2nap_disconnect_status (DisconnectContext *ctx)
-{
-    if (ctx->e2nap_status == MM_BEARER_CONNECTION_STATUS_DISCONNECTED) {
-        /* Reporting disconnected */
-        mm_dbg ("Connection disconnect indicated already by an unsolicited message");
-        g_simple_async_result_set_op_res_gboolean (ctx->result, TRUE);
-        disconnect_context_complete_and_free (ctx);
-        return TRUE;
+    ctx = g_task_get_task_data (task);
+
+    if (ctx->poll_id) {
+        g_source_remove (ctx->poll_id);
+        ctx->poll_id = 0;
     }
 
-    return FALSE;
+    /* Received 'DISCONNECTED' during a disconnection attempt? */
+    if (status == MM_BEARER_CONNECTION_STATUS_DISCONNECTED) {
+        mm_dbg ("Connection disconnect indicated by an unsolicited message");
+        g_task_return_boolean (task, TRUE);
+    } else {
+        /* Otherwise, report error */
+        g_task_return_new_error (task, MM_CORE_ERROR, MM_CORE_ERROR_FAILED, "Disconnection failed");
+    }
+    g_object_unref (task);
 }
 
-static gboolean disconnect_poll_cb (DisconnectContext *ctx);
+static gboolean disconnect_poll_cb (MMBroadbandBearerMbm *self);
 
 static void
-disconnect_poll_ready (MMBaseModem *modem,
-                       GAsyncResult *res,
-                       DisconnectContext *ctx)
+disconnect_poll_ready (MMBaseModem          *modem,
+                       GAsyncResult         *res,
+                       MMBroadbandBearerMbm *self)
+
 {
-    GError *error = NULL;
-    const gchar *response;
-    guint state;
+    GTask             *task;
+    DisconnectContext *ctx;
+    GError            *error = NULL;
+    const gchar       *response;
+    guint              state;
+
+    task = self->priv->disconnect_pending;
+    self->priv->disconnect_pending = NULL;
+
+    if (!task) {
+        mm_dbg ("Disconnection context was finished already by an unsolicited message");
+        /* Run _finish() to finalize the async call, even if we don't care
+         * the result */
+        mm_base_modem_at_command_full_finish (modem, res, NULL);
+        goto out;
+    }
 
     response = mm_base_modem_at_command_full_finish (modem, res, &error);
     if (!response) {
-        g_simple_async_result_take_error (ctx->result, error);
-        disconnect_context_complete_and_free (ctx);
-        return;
+        g_task_return_error (task, error);
+        g_object_unref (task);
+        goto out;
     }
 
-    if (sscanf (response, "*ENAP: %d", &state) == 1
-        && state == 0) {
+    if (sscanf (response, "*ENAP: %d", &state) == 1 && state == 0) {
         /* Disconnected */
-        g_simple_async_result_set_op_res_gboolean (ctx->result, TRUE);
-        disconnect_context_complete_and_free (ctx);
-        return;
+        g_task_return_boolean (task, TRUE);
+        g_object_unref (task);
+        goto out;
     }
 
-    /* Check again in one second */
+    /* Restore pending task and check in 1s */
+    self->priv->disconnect_pending = task;
+    ctx = g_task_get_task_data (task);
     g_assert (ctx->poll_id == 0);
-    ctx->poll_id = g_timeout_add_seconds (1,
-                                          (GSourceFunc)disconnect_poll_cb,
-                                          ctx);
+    ctx->poll_id = g_timeout_add_seconds (1, (GSourceFunc) disconnect_poll_cb, self);
+
+ out:
+    /* Balance refcount with the extra ref we passed to command_full() */
+    g_object_unref (self);
 }
 
 static gboolean
-disconnect_poll_cb (DisconnectContext *ctx)
+disconnect_poll_cb (MMBroadbandBearerMbm *self)
 {
-    ctx->poll_id = 0;
+    GTask             *task;
+    DisconnectContext *ctx;
 
-    /* Process any unsolicited E2NAP status */
-    if (handle_e2nap_disconnect_status (ctx))
-        return G_SOURCE_REMOVE;
+    task = self->priv->disconnect_pending;
+    self->priv->disconnect_pending = NULL;
+
+    g_assert (task);
+    ctx = g_task_get_task_data (task);
+
+    ctx->poll_id = 0;
 
     /* Too many retries... */
     if (ctx->poll_count > 20) {
-        g_simple_async_result_set_error (ctx->result,
-                                         MM_MOBILE_EQUIPMENT_ERROR,
-                                         MM_MOBILE_EQUIPMENT_ERROR_NETWORK_TIMEOUT,
-                                         "Disconnection attempt timed out");
-        disconnect_context_complete_and_free (ctx);
+        g_task_return_new_error (task,
+                                 MM_MOBILE_EQUIPMENT_ERROR,
+                                 MM_MOBILE_EQUIPMENT_ERROR_NETWORK_TIMEOUT,
+                                 "Disconnection attempt timed out");
+        g_object_unref (task);
         return G_SOURCE_REMOVE;
     }
 
+    /* Restore pending task and poll */
+    self->priv->disconnect_pending = task;
     ctx->poll_count++;
     mm_base_modem_at_command_full (ctx->modem,
                                    ctx->primary,
@@ -687,17 +708,31 @@ disconnect_poll_cb (DisconnectContext *ctx)
                                    FALSE,
                                    FALSE, /* raw */
                                    NULL, /* cancellable */
-                                   (GAsyncReadyCallback)disconnect_poll_ready,
-                                   ctx);
+                                   (GAsyncReadyCallback) disconnect_poll_ready,
+                                   g_object_ref (self)); /* we pass the bearer object! */
     return G_SOURCE_REMOVE;
 }
 
 static void
-disconnect_enap_ready (MMBaseModem *modem,
-                       GAsyncResult *res,
-                       DisconnectContext *ctx)
+disconnect_enap_ready (MMBaseModem          *modem,
+                       GAsyncResult         *res,
+                       MMBroadbandBearerMbm *self)
 {
-    GError *error = NULL;
+    DisconnectContext *ctx;
+    GTask             *task;
+    GError            *error = NULL;
+
+    task = self->priv->disconnect_pending;
+    self->priv->disconnect_pending = NULL;
+
+    /* Try to recover the disconnection context. If none found, it means the
+     * context was already completed and we have nothing else to do. */
+    if (!task) {
+        mm_base_modem_at_command_full_finish (modem, res, NULL);
+        goto out;
+    }
+
+    ctx = g_task_get_task_data (task);
 
     /* Ignore errors for now */
     mm_base_modem_at_command_full_finish (modem, res, &error);
@@ -706,45 +741,44 @@ disconnect_enap_ready (MMBaseModem *modem,
         g_error_free (error);
     }
 
-    /* Process any unsolicited E2NAP status received before the ENAP OK */
-    if (handle_e2nap_disconnect_status (ctx))
-        return;
-
     /* No unsolicited E2NAP status yet; wait for it and periodically poll
      * to handle very old F3507g/MD300 firmware that may not send E2NAP. */
-    ctx->poll_id = g_timeout_add_seconds (1,
-                                          (GSourceFunc)disconnect_poll_cb,
-                                          ctx);
+    self->priv->disconnect_pending = task;
+    ctx->poll_id = g_timeout_add_seconds (1, (GSourceFunc)disconnect_poll_cb, self);
+
+ out:
+    /* Balance refcount with the extra ref we passed to command_full() */
+    g_object_unref (self);
 }
 
 static void
-disconnect_3gpp (MMBroadbandBearer *self,
-                 MMBroadbandModem *modem,
-                 MMPortSerialAt *primary,
-                 MMPortSerialAt *secondary,
-                 MMPort *data,
-                 guint cid,
-                 GAsyncReadyCallback callback,
-                 gpointer user_data)
+disconnect_3gpp (MMBroadbandBearer   *_self,
+                 MMBroadbandModem    *modem,
+                 MMPortSerialAt      *primary,
+                 MMPortSerialAt      *secondary,
+                 MMPort              *data,
+                 guint                cid,
+                 GAsyncReadyCallback  callback,
+                 gpointer             user_data)
 {
-    DisconnectContext *ctx;
+    MMBroadbandBearerMbm *self = MM_BROADBAND_BEARER_MBM (_self);
+    GTask                *task;
+    DisconnectContext    *ctx;
 
     g_assert (primary != NULL);
 
+    task = g_task_new (self, NULL, callback, user_data);
+
     ctx = g_new0 (DisconnectContext, 1);
-    ctx->self = g_object_ref (self);
     ctx->modem = MM_BASE_MODEM (g_object_ref (modem));
     ctx->primary = g_object_ref (primary);
-    ctx->result = g_simple_async_result_new (G_OBJECT (self),
-                                             callback,
-                                             user_data,
-                                             disconnect_3gpp);
+    g_task_set_task_data (task, ctx, (GDestroyNotify) disconnect_context_free);
 
     /* The unsolicited response to ENAP may come before the OK does.
      * We will keep the disconnection context in the bearer private data so
      * that it is accessible from the unsolicited message handler. */
-    g_assert (ctx->self->priv->disconnect_pending == NULL);
-    ctx->self->priv->disconnect_pending = ctx;
+    g_assert (self->priv->disconnect_pending == NULL);
+    self->priv->disconnect_pending = task;
 
     mm_base_modem_at_command_full (MM_BASE_MODEM (modem),
                                    primary,
@@ -754,7 +788,45 @@ disconnect_3gpp (MMBroadbandBearer *self,
                                    FALSE, /* raw */
                                    NULL, /* cancellable */
                                    (GAsyncReadyCallback)disconnect_enap_ready,
-                                   ctx);
+                                   g_object_ref (self)); /* we pass the bearer object! */
+}
+
+/*****************************************************************************/
+
+static void
+report_connection_status (MMBaseBearer             *_self,
+                          MMBearerConnectionStatus  status)
+{
+    MMBroadbandBearerMbm *self = MM_BROADBAND_BEARER_MBM (_self);
+
+    g_assert (status == MM_BEARER_CONNECTION_STATUS_CONNECTED ||
+              status == MM_BEARER_CONNECTION_STATUS_CONNECTION_FAILED ||
+              status == MM_BEARER_CONNECTION_STATUS_DISCONNECTED);
+
+    /* Process pending connection attempt */
+    if (self->priv->connect_pending) {
+        process_pending_connect_attempt (self, status);
+        return;
+    }
+
+    /* Process pending disconnection attempt */
+    if (self->priv->disconnect_pending) {
+        process_pending_disconnect_attempt (self, status);
+        return;
+    }
+
+    mm_dbg ("Received spontaneous E2NAP (%s)",
+            mm_bearer_connection_status_get_string (status));
+
+    /* Received a random 'DISCONNECTED'...*/
+    if (status == MM_BEARER_CONNECTION_STATUS_DISCONNECTED ||
+        status == MM_BEARER_CONNECTION_STATUS_CONNECTION_FAILED) {
+        /* If no connection/disconnection attempt on-going, make sure we mark ourselves as
+         * disconnected. Make sure we only pass 'DISCONNECTED' to the parent */
+        MM_BASE_BEARER_CLASS (mm_broadband_bearer_mbm_parent_class)->report_connection_status (
+            _self,
+            MM_BEARER_CONNECTION_STATUS_DISCONNECTED);
+    }
 }
 
 /*****************************************************************************/

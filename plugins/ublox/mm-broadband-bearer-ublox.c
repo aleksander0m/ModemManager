@@ -33,6 +33,16 @@
 #include "mm-modem-helpers.h"
 #include "mm-modem-helpers-ublox.h"
 
+/*
+ * Time to wait after activating a context before going on to manage routes
+ * (i.e. time we leave to the module to do its own internal setup).
+ *
+ * NOTE: this logic should be removed once the u-blox TOBY-L4 firmware is
+ * updated so that all non-default contexts don't create a default route
+ * themselves.
+ */
+#define AFTER_ACTIVATION_TIMEOUT_SECS 10
+
 G_DEFINE_TYPE (MMBroadbandBearerUblox, mm_broadband_bearer_ublox, MM_TYPE_BROADBAND_BEARER)
 
 enum {
@@ -484,6 +494,24 @@ uiproute_ready (MMBaseModem  *modem,
     uiproute_del_default (task);
 }
 
+static gboolean
+after_activation_timeout_ready (GTask *task)
+{
+    CommonConnectContext *ctx;
+
+    ctx = (CommonConnectContext *) g_task_get_task_data (task);
+
+    mm_dbg ("querying current routes...");
+    mm_base_modem_at_command (MM_BASE_MODEM (ctx->modem),
+                              "+UIPROUTE?",
+                              10,
+                              FALSE,
+                              (GAsyncReadyCallback) uiproute_ready,
+                              task);
+
+    return G_SOURCE_REMOVE;
+}
+
 static void
 cgact_activate_ready (MMBaseModem  *modem,
                       GAsyncResult *res,
@@ -516,13 +544,15 @@ cgact_activate_ready (MMBaseModem  *modem,
         return;
     }
 
-    mm_dbg ("querying current routes...");
-    mm_base_modem_at_command (MM_BASE_MODEM (ctx->modem),
-                              "+UIPROUTE?",
-                              10,
-                              FALSE,
-                              (GAsyncReadyCallback) uiproute_ready,
-                              task);
+    /*
+     * NOTE:
+     * When a context is activated right in this place (e.g. it wasn't a context
+     * for the default LTE bearer connection), we need to leave some time to the
+     * modem to finish its own internal setup, otherwise querying routes may end
+     * up not returning anything associated to this context.
+     */
+    mm_dbg ("leaving some setup time to the module...");
+    g_timeout_add_seconds (AFTER_ACTIVATION_TIMEOUT_SECS, (GSourceFunc) after_activation_timeout_ready, task);
 }
 
 static void

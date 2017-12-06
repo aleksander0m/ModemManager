@@ -43,6 +43,16 @@
  */
 #define AFTER_ACTIVATION_TIMEOUT_SECS 10
 
+/* When adding our custom routes, we will define different metrics based on
+ * whether this was the first APN being connected or one of the extra ones
+ * allowed. We don't use metric 0, as that is the default metric used by
+ * the TOBY module internally, and we don't want to collide with the possible
+ * routes it has for its own operation (e.g. the 192.168.2.0/24 subnet it uses
+ * for the NCM interface).
+ */
+#define PRIMARY_APN_METRIC   100
+#define SECONDARY_APN_METRIC 200
+
 G_DEFINE_TYPE (MMBroadbandBearerUblox, mm_broadband_bearer_ublox, MM_TYPE_BROADBAND_BEARER)
 
 enum {
@@ -409,12 +419,12 @@ uiproute_add_destination (GTask *task)
     /* Add route */
     if (next_destination->netmask) {
         mm_dbg ("Adding default route for network %s/%s...", next_destination->address, next_destination->netmask);
-        cmd = g_strdup_printf ("+UIPROUTE=\"add -net %s netmask %s dev inm%u\"",
-                               next_destination->address, next_destination->netmask, ctx->cid - 1);
+        cmd = g_strdup_printf ("+UIPROUTE=\"add -net %s netmask %s dev inm%u metric %u\"",
+                               next_destination->address, next_destination->netmask, ctx->cid - 1, ctx->secondary ? SECONDARY_APN_METRIC : PRIMARY_APN_METRIC);
     } else {
         mm_dbg ("Adding default route for host %s...", next_destination->address);
-        cmd = g_strdup_printf ("+UIPROUTE=\"add -host %s dev inm%u\"",
-                               next_destination->address, ctx->cid - 1);
+        cmd = g_strdup_printf ("+UIPROUTE=\"add -host %s dev inm%u metric %u\"",
+                               next_destination->address, ctx->cid - 1, ctx->secondary ? SECONDARY_APN_METRIC : PRIMARY_APN_METRIC);
     }
     mm_base_modem_at_command (MM_BASE_MODEM (ctx->modem),
                               cmd,
@@ -457,7 +467,7 @@ uiproute_add_default (GTask *task)
 
     /* Add default route */
     mm_dbg ("Adding default route...");
-    cmd = g_strdup_printf ("+UIPROUTE=\"add -net default dev inm%u\"", ctx->cid - 1);
+    cmd = g_strdup_printf ("+UIPROUTE=\"add -net default dev inm%u metric %u\"", ctx->cid - 1, ctx->secondary ? SECONDARY_APN_METRIC : PRIMARY_APN_METRIC);
     mm_base_modem_at_command (MM_BASE_MODEM (ctx->modem),
                               cmd,
                               10,

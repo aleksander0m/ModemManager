@@ -175,9 +175,25 @@ gboolean mm_ublox_parse_ugcntrd_response_for_cid (const gchar  *response,
 /*****************************************************************************/
 /* +UIPROUTE response parser */
 
-gboolean mm_ublox_parse_uiproute_response_find_default_route_for_cid (const gchar  *reply,
-                                                                      guint         cid,
-                                                                      GError      **error);
+typedef struct {
+    gchar *destination;
+    gchar *gateway;
+    gchar *genmask;
+    gint   metric;
+    gchar *iface;
+} MMUbloxRoute;
+
+void   mm_ublox_route_free              (MMUbloxRoute  *route);
+GList *mm_ublox_parse_uiproute_response (const gchar   *reply,
+                                         GError       **error);
+
+const MMUbloxRoute *mm_ublox_route_list_find (GList        *routes,
+                                              const gchar  *destination,
+                                              const gchar  *gateway,
+                                              const gchar  *genmask,
+                                              gint          metric,
+                                              const gchar  *iface,
+                                              GError      **error);
 
 /*****************************************************************************/
 /* APN destinations configuration */

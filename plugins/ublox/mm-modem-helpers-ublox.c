@@ -1481,45 +1481,41 @@ out:
  * +UIPROUTE: 192.168.90.0    *               255.255.255.0   U     0      0        0 eth0
  */
 
-gboolean
-mm_ublox_parse_uiproute_response_find_default_route_for_cid (const gchar  *reply,
-                                                             guint         cid,
-                                                             GError      **error)
+void
+mm_ublox_route_free (MMUbloxRoute *route)
 {
+    g_free (route->destination);
+    g_free (route->gateway);
+    g_free (route->genmask);
+    g_free (route->iface);
+    g_slice_free (MMUbloxRoute, route);
+}
+
+GList *
+mm_ublox_parse_uiproute_response (const gchar  *reply,
+                                  GError      **error)
+{
+    GList      *list = NULL;
     GError     *inner_error = NULL;
     GRegex     *r;
     GMatchInfo *match_info;
-    gboolean    found = FALSE;
-    gchar      *expected_iface = NULL;
 
-    if (!reply || !reply[0] || cid < 1)
-        goto out;
-
-    expected_iface = g_strdup_printf ("inm%u", cid - 1);
+    if (!reply || !reply[0])
+        return NULL;
 
     reply = mm_strip_tag (reply, "+UIPROUTE: Kernel IP routing table");
-
     r = g_regex_new ("\\+UIPROUTE:\\s*([^ ]*)\\s*([^ ]*)\\s*([^ ]*)\\s*([^ ]*)\\s*([^ ]*)\\s*([^ ]*)\\s*([^ ]*)\\s*([^ \\r\\n]*)(?:\\r\\n)",
                      G_REGEX_DOLLAR_ENDONLY | G_REGEX_RAW, 0, &inner_error);
     g_assert (r);
 
     g_regex_match_full (r, reply, strlen (reply), 0, 0, &match_info, &inner_error);
     while (!inner_error && g_match_info_matches (match_info)) {
-        gchar *entry_destination = NULL;
-        gchar *entry_iface = NULL;
+        MMUbloxRoute *route;
 
-        if (!(entry_destination = mm_get_string_unquoted_from_match_info (match_info, 1))) {
-            inner_error = g_error_new (MM_CORE_ERROR,
-                                       MM_CORE_ERROR_FAILED,
-                                       "Couldn't parse destination from reply: '%s'",
-                                       reply);
-            goto next;
-        }
+        route = g_slice_new0 (MMUbloxRoute);
 
-        if (!g_str_equal (entry_destination, "default"))
-            goto next;
-
-        if (!(entry_iface = mm_get_string_unquoted_from_match_info (match_info, 8))) {
+        /* First parse iface, we only want inmX routes */
+        if (!(route->iface = mm_get_string_unquoted_from_match_info (match_info, 8))) {
             inner_error = g_error_new (MM_CORE_ERROR,
                                        MM_CORE_ERROR_FAILED,
                                        "Couldn't parse interface from reply: '%s'",
@@ -1527,39 +1523,99 @@ mm_ublox_parse_uiproute_response_find_default_route_for_cid (const gchar  *reply
             goto next;
         }
 
-        if (g_str_equal (entry_iface, expected_iface))
-            found = TRUE;
+        if (!g_str_has_prefix (route->iface, "inm"))
+            goto next;
+
+        if (!(route->destination = mm_get_string_unquoted_from_match_info (match_info, 1))) {
+            inner_error = g_error_new (MM_CORE_ERROR,
+                                       MM_CORE_ERROR_FAILED,
+                                       "Couldn't parse destination from reply: '%s'",
+                                       reply);
+            goto next;
+        }
+
+        if (!(route->gateway = mm_get_string_unquoted_from_match_info (match_info, 2))) {
+            inner_error = g_error_new (MM_CORE_ERROR,
+                                       MM_CORE_ERROR_FAILED,
+                                       "Couldn't parse gateway from reply: '%s'",
+                                       reply);
+            goto next;
+        }
+
+        if (!(route->genmask = mm_get_string_unquoted_from_match_info (match_info, 3))) {
+            inner_error = g_error_new (MM_CORE_ERROR,
+                                       MM_CORE_ERROR_FAILED,
+                                       "Couldn't parse genmask from reply: '%s'",
+                                       reply);
+            goto next;
+        }
+
+        if (!mm_get_int_from_match_info (match_info, 5, &route->metric)) {
+            inner_error = g_error_new (MM_CORE_ERROR,
+                                       MM_CORE_ERROR_FAILED,
+                                       "Couldn't parse metric from reply: '%s'",
+                                       reply);
+            goto next;
+        }
+
+        /* Add to output list */
+        list = g_list_append (list, route);
+        route = NULL;
 
     next:
-        g_free (entry_destination);
-        g_free (entry_iface);
-
-        if (found)
+        if (route)
+            mm_ublox_route_free (route);
+        if (inner_error)
             break;
 
         g_match_info_next (match_info, &inner_error);
     }
-
-    g_free (expected_iface);
 
     if (match_info)
         g_match_info_free (match_info);
     g_regex_unref (r);
 
     if (inner_error) {
+        g_list_free_full (list, (GDestroyNotify) mm_ublox_route_free);
         g_propagate_error (error, inner_error);
         g_prefix_error (error, "Couldn't properly parse list of routes. ");
-        return FALSE;
+        return NULL;
     }
 
- out:
-    if (!found) {
-        g_set_error (error, MM_CORE_ERROR, MM_CORE_ERROR_NOT_FOUND,
-                     "No default route entry found");
-        return FALSE;
+    return list;
+}
+
+const MMUbloxRoute *
+mm_ublox_route_list_find (GList        *routes,
+                          const gchar  *destination,
+                          const gchar  *gateway,
+                          const gchar  *genmask,
+                          gint          metric,
+                          const gchar  *iface,
+                          GError      **error)
+{
+    GList *l;
+
+    for (l = routes; l; l = g_list_next (l)) {
+        MMUbloxRoute *route;
+
+        route = (MMUbloxRoute *)(l->data);
+
+        if (destination && !g_str_equal (destination, route->destination))
+            continue;
+        if (gateway && !g_str_equal (gateway, route->gateway))
+            continue;
+        if (genmask && !g_str_equal (genmask, route->genmask))
+            continue;
+        if (metric >= 0 && metric != route->metric)
+            continue;
+        if (iface && !g_str_equal (iface, route->iface))
+            continue;
+        return route;
     }
 
-    return TRUE;
+    g_set_error (error, MM_CORE_ERROR, MM_CORE_ERROR_NOT_FOUND, "route not found");
+    return NULL;
 }
 
 /*****************************************************************************/

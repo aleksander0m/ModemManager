@@ -90,9 +90,11 @@ typedef struct {
     gboolean                secondary;
     guint                   secondary_i;
     /* For route settings */
+    gchar                  *iface;
     gchar                  *unquoted_apn;
     gboolean                default_route;
     GList                  *apn_destinations;
+    GList                  *routes;
     /* For IPv4 settings */
     MMBearerIpConfig       *ip_config;
 } CommonConnectContext;
@@ -100,7 +102,9 @@ typedef struct {
 static void
 common_connect_context_free (CommonConnectContext *ctx)
 {
+    g_list_free_full (ctx->routes, (GDestroyNotify) mm_ublox_route_free);
     g_list_free_full (ctx->apn_destinations, (GDestroyNotify) mm_ublox_apn_destination_free);
+    g_free (ctx->iface);
     g_free (ctx->unquoted_apn);
     if (ctx->ip_config)
         g_object_unref (ctx->ip_config);
@@ -127,11 +131,14 @@ common_connect_task_new (MMBroadbandBearerUblox  *self,
     CommonConnectContext *ctx;
     GTask                *task;
 
+    g_assert (cid >= 1);
+
     ctx = g_slice_new0 (CommonConnectContext);
     ctx->self        = g_object_ref (self);
     ctx->modem       = g_object_ref (modem);
     ctx->primary     = g_object_ref (primary);
     ctx->cid         = cid;
+    ctx->iface       = g_strdup_printf ("inm%u", cid - 1);
     ctx->secondary   = secondary;
     ctx->secondary_i = secondary_i;
     if (data)
@@ -342,6 +349,42 @@ get_ip_config_3gpp (MMBroadbandBearer   *self,
 }
 
 /*****************************************************************************/
+/* Common route removal */
+
+static void
+uiproute_del_all (GTask *task)
+{
+    CommonConnectContext *ctx;
+    GList                *l;
+
+    ctx = (CommonConnectContext *) g_task_get_task_data (task);
+
+    for (l = ctx->routes; l; l = g_list_next (l)) {
+        MMUbloxRoute *route;
+        GString      *cmd;
+
+        route = (MMUbloxRoute *)(l->data);
+        if (g_strcmp0 (ctx->iface, route->iface) != 0)
+            continue;
+
+        mm_dbg ("Scheduling removal of route to destination %s via %s", route->destination, ctx->iface);
+        cmd = g_string_new ("+UIPROUTE=\"del ");
+        if (g_strcmp0 (route->genmask, "255.255.255.255") == 0)
+            g_string_append_printf (cmd, "-host %s ",  route->destination);
+        else {
+            g_string_append_printf (cmd, "-net %s ", route->destination);
+            if (g_strcmp0 (route->destination, "default") != 0)
+                g_string_append_printf (cmd, "netmask %s ", route->genmask);
+        }
+        if (g_strcmp0 (route->gateway, "*") != 0)
+            g_string_append_printf (cmd, "gw %s ", route->gateway);
+        g_string_append_printf (cmd, "metric %u dev %s\"", route->metric, route->iface);
+        mm_base_modem_at_command (MM_BASE_MODEM (ctx->modem), cmd->str, 10, FALSE, NULL, NULL);
+        g_string_free (cmd, TRUE);
+    }
+}
+
+/*****************************************************************************/
 /* 3GPP Dialing (sub-step of the 3GPP Connection sequence) */
 
 static MMPort *
@@ -414,17 +457,15 @@ uiproute_add_destination (GTask *task)
     next_destination = ctx->apn_destinations->data;
     ctx->apn_destinations = g_list_delete_link (ctx->apn_destinations, ctx->apn_destinations);
 
-    g_assert (ctx->cid >= 1);
-
     /* Add route */
     if (next_destination->netmask) {
         mm_dbg ("Adding default route for network %s/%s...", next_destination->address, next_destination->netmask);
-        cmd = g_strdup_printf ("+UIPROUTE=\"add -net %s netmask %s dev inm%u metric %u\"",
-                               next_destination->address, next_destination->netmask, ctx->cid - 1, ctx->secondary ? SECONDARY_APN_METRIC : PRIMARY_APN_METRIC);
+        cmd = g_strdup_printf ("+UIPROUTE=\"add -net %s netmask %s dev %s metric %u\"",
+                               next_destination->address, next_destination->netmask, ctx->iface, ctx->secondary ? SECONDARY_APN_METRIC : PRIMARY_APN_METRIC);
     } else {
         mm_dbg ("Adding default route for host %s...", next_destination->address);
-        cmd = g_strdup_printf ("+UIPROUTE=\"add -host %s dev inm%u metric %u\"",
-                               next_destination->address, ctx->cid - 1, ctx->secondary ? SECONDARY_APN_METRIC : PRIMARY_APN_METRIC);
+        cmd = g_strdup_printf ("+UIPROUTE=\"add -host %s dev %s metric %u\"",
+                               next_destination->address, ctx->iface, ctx->secondary ? SECONDARY_APN_METRIC : PRIMARY_APN_METRIC);
     }
     mm_base_modem_at_command (MM_BASE_MODEM (ctx->modem),
                               cmd,
@@ -463,8 +504,6 @@ uiproute_add_default (GTask *task)
 
     ctx = (CommonConnectContext *) g_task_get_task_data (task);
 
-    g_assert (ctx->cid >= 1);
-
     /* Add default route */
     mm_dbg ("Adding default route...");
     cmd = g_strdup_printf ("+UIPROUTE=\"add -net default dev inm%u metric %u\"", ctx->cid - 1, ctx->secondary ? SECONDARY_APN_METRIC : PRIMARY_APN_METRIC);
@@ -496,46 +535,6 @@ uiproute_setup (GTask *task)
 }
 
 static void
-uiproute_del_default_ready (MMBaseModem  *modem,
-                            GAsyncResult *res,
-                            GTask        *task)
-{
-    GError               *error = NULL;
-    CommonConnectContext *ctx;
-
-    ctx = (CommonConnectContext *) g_task_get_task_data (task);
-
-    if (!mm_base_modem_at_command_finish (modem, res, &error)) {
-        g_task_return_error (task, error);
-        g_object_unref (task);
-        return;
-    }
-
-    uiproute_setup (task);
-}
-
-static void
-uiproute_del_default (GTask *task)
-{
-    CommonConnectContext *ctx;
-    gchar                *cmd;
-
-    ctx = (CommonConnectContext *) g_task_get_task_data (task);
-
-    g_assert (ctx->cid >= 1);
-    mm_dbg ("Removing default route through inm%u...", ctx->cid - 1);
-    cmd = g_strdup_printf ("+UIPROUTE=\"del -net default dev inm%u\"", ctx->cid - 1);
-    mm_base_modem_at_command (MM_BASE_MODEM (ctx->modem),
-                              cmd,
-                              10,
-                              FALSE,
-                              (GAsyncReadyCallback) uiproute_del_default_ready,
-                              task);
-    g_free (cmd);
-}
-
-
-static void
 uiproute_ready (MMBaseModem  *modem,
                 GAsyncResult *res,
                 GTask        *task)
@@ -553,15 +552,15 @@ uiproute_ready (MMBaseModem  *modem,
         return;
     }
 
-    if (!mm_ublox_parse_uiproute_response_find_default_route_for_cid (response, ctx->cid, &error)) {
-        mm_dbg ("Couldn't find default route: %s", error->message);
-        g_error_free (error);
-        /* Try to setup routes right away */
-        uiproute_setup (task);
+    ctx->routes = mm_ublox_parse_uiproute_response (response, &error);
+    if (error) {
+        g_task_return_error (task, error);
+        g_object_unref (task);
         return;
     }
 
-    uiproute_del_default (task);
+    uiproute_del_all (task);
+    uiproute_setup (task);
 }
 
 static gboolean
@@ -1005,6 +1004,46 @@ cgact_deactivate_ready (MMBaseModem  *modem,
 }
 
 static void
+uiproute_disconnect_ready (MMBaseModem  *modem,
+                           GAsyncResult *res,
+                           GTask        *task)
+{
+    const gchar          *response;
+    GError               *error = NULL;
+    CommonConnectContext *ctx;
+    gchar                *cmd;
+
+    ctx = (CommonConnectContext *) g_task_get_task_data (task);
+
+    response = mm_base_modem_at_command_finish (modem, res, &error);
+    if (!response) {
+        g_task_return_error (task, error);
+        g_object_unref (task);
+        return;
+    }
+
+    ctx->routes = mm_ublox_parse_uiproute_response (response, &error);
+    if (error) {
+        g_task_return_error (task, error);
+        g_object_unref (task);
+        return;
+    }
+
+    /* Delete all routes before disconnecting */
+    uiproute_del_all (task);
+
+    cmd = g_strdup_printf ("+CGACT=0,%u", ctx->cid);
+    mm_dbg ("deactivating PDP context #%u...", ctx->cid);
+    mm_base_modem_at_command (MM_BASE_MODEM (modem),
+                              cmd,
+                              120,
+                              FALSE,
+                              (GAsyncReadyCallback) cgact_deactivate_ready,
+                              task);
+    g_free (cmd);
+}
+
+static void
 disconnect_3gpp  (MMBroadbandBearer   *self,
                   MMBroadbandModem    *modem,
                   MMPortSerialAt      *primary,
@@ -1015,7 +1054,6 @@ disconnect_3gpp  (MMBroadbandBearer   *self,
                   gpointer             user_data)
 {
     GTask *task;
-    gchar *cmd;
 
     if (!(task = common_connect_task_new (MM_BROADBAND_BEARER_UBLOX (self),
                                           MM_BROADBAND_MODEM (modem),
@@ -1028,15 +1066,13 @@ disconnect_3gpp  (MMBroadbandBearer   *self,
                                           user_data)))
         return;
 
-    cmd = g_strdup_printf ("+CGACT=0,%u", cid);
-    mm_dbg ("deactivating PDP context #%u...", cid);
+    mm_dbg ("querying current routes for removal...");
     mm_base_modem_at_command (MM_BASE_MODEM (modem),
-                              cmd,
-                              120,
+                              "+UIPROUTE?",
+                              10,
                               FALSE,
-                              (GAsyncReadyCallback) cgact_deactivate_ready,
+                              (GAsyncReadyCallback) uiproute_disconnect_ready,
                               task);
-    g_free (cmd);
 }
 
 /*****************************************************************************/

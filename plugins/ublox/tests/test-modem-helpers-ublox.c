@@ -1082,22 +1082,51 @@ test_uiproute_response (void)
         "+UIPROUTE: Destination     Gateway         Genmask         Flags Metric Ref    Use Iface\r\n"
         "+UIPROUTE: default         10.156.9.115    0.0.0.0         UG    0      0        0 inm1\r\n"
         "+UIPROUTE: default         10.156.88.200   0.0.0.0         UG    0      0        0 inm0\r\n"
+        "+UIPROUTE: 10.0.0.0        *               255.0.0.0       U     100    0        0 inm0\r\n"
+        "+UIPROUTE: 172.16.0.0      *               255.240.0.0     U     100    0        0 inm0\r\n"
+        "+UIPROUTE: 192.168.0.0     *               255.255.0.0     U     100    0        0 inm0\r\n"
         "+UIPROUTE: 192.168.2.0     *               255.255.255.0   U     0      0        0 usb0\r\n"
         "+UIPROUTE: 192.168.90.0    *               255.255.255.0   U     0      0        0 eth0\r\n";
-    GError *error = NULL;
-    gboolean result;
+    GError             *error = NULL;
+    const MMUbloxRoute *result;
+    GList              *routes;
 
-    result = mm_ublox_parse_uiproute_response_find_default_route_for_cid (response, 2, &error);
+    routes = mm_ublox_parse_uiproute_response (response, &error);
+    g_assert_no_error (error);
+    g_assert (routes);
+
+    result = mm_ublox_route_list_find (routes, "default", NULL, NULL, -1, "inm0", &error);
     g_assert_no_error (error);
     g_assert (result);
 
-    result = mm_ublox_parse_uiproute_response_find_default_route_for_cid (response, 1, &error);
+    result = mm_ublox_route_list_find (routes, "default", NULL, NULL, -1, "inm1", &error);
     g_assert_no_error (error);
     g_assert (result);
 
-    result = mm_ublox_parse_uiproute_response_find_default_route_for_cid (response, 3, &error);
+    result = mm_ublox_route_list_find (routes, "default", NULL, NULL, -1, "inm2", &error);
     g_assert_error (error, MM_CORE_ERROR, MM_CORE_ERROR_NOT_FOUND);
+    g_clear_error (&error);
     g_assert (!result);
+
+    result = mm_ublox_route_list_find (routes, "10.0.0.0", NULL, "255.0.0.0", 100, "inm0", &error);
+    g_assert_no_error (error);
+    g_assert (result);
+
+    result = mm_ublox_route_list_find (routes, "10.0.0.0", NULL, "255.0.0.0", -1, "inm0", &error);
+    g_assert_no_error (error);
+    g_assert (result);
+
+    result = mm_ublox_route_list_find (routes, "10.0.0.0", NULL, "255.255.0.0", 100, "inm0", &error);
+    g_assert_error (error, MM_CORE_ERROR, MM_CORE_ERROR_NOT_FOUND);
+    g_clear_error (&error);
+    g_assert (!result);
+
+    result = mm_ublox_route_list_find (routes, "10.0.0.0", NULL, "255.0.0.0", 0, "inm0", &error);
+    g_assert_error (error, MM_CORE_ERROR, MM_CORE_ERROR_NOT_FOUND);
+    g_clear_error (&error);
+    g_assert (!result);
+
+    g_list_free_full (routes, (GDestroyNotify) mm_ublox_route_free);
 }
 
 /*****************************************************************************/

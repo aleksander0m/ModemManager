@@ -81,6 +81,7 @@ typedef struct {
     guint                   secondary_i;
     /* For route settings */
     gchar                  *unquoted_apn;
+    gboolean                default_route;
     GList                  *apn_destinations;
     /* For IPv4 settings */
     MMBearerIpConfig       *ip_config;
@@ -426,6 +427,65 @@ uiproute_add_destination (GTask *task)
 }
 
 static void
+uiproute_add_default_ready (MMBaseModem  *modem,
+                            GAsyncResult *res,
+                            GTask        *task)
+{
+    GError               *error = NULL;
+    CommonConnectContext *ctx;
+
+    ctx = (CommonConnectContext *) g_task_get_task_data (task);
+
+    if (!mm_base_modem_at_command_finish (modem, res, &error)) {
+        g_task_return_error (task, error);
+        g_object_unref (task);
+        return;
+    }
+
+    complete_connected (task);
+}
+
+static void
+uiproute_add_default (GTask *task)
+{
+    CommonConnectContext  *ctx;
+    gchar                 *cmd;
+
+    ctx = (CommonConnectContext *) g_task_get_task_data (task);
+
+    g_assert (ctx->cid >= 1);
+
+    /* Add default route */
+    mm_dbg ("Adding default route...");
+    cmd = g_strdup_printf ("+UIPROUTE=\"add -net default dev inm%u\"", ctx->cid - 1);
+    mm_base_modem_at_command (MM_BASE_MODEM (ctx->modem),
+                              cmd,
+                              10,
+                              FALSE,
+                              (GAsyncReadyCallback) uiproute_add_default_ready,
+                              task);
+    g_free (cmd);
+}
+
+static void
+uiproute_setup (GTask *task)
+{
+    CommonConnectContext *ctx;
+
+    ctx = (CommonConnectContext *) g_task_get_task_data (task);
+
+    /* If per-APN destinations defined, start adding them */
+    if (ctx->apn_destinations) {
+        uiproute_add_destination (task);
+        return;
+    }
+
+    /* This must be a default route */
+    g_assert (ctx->default_route);
+    uiproute_add_default (task);
+}
+
+static void
 uiproute_del_default_ready (MMBaseModem  *modem,
                             GAsyncResult *res,
                             GTask        *task)
@@ -441,7 +501,7 @@ uiproute_del_default_ready (MMBaseModem  *modem,
         return;
     }
 
-    uiproute_add_destination (task);
+    uiproute_setup (task);
 }
 
 static void
@@ -486,8 +546,8 @@ uiproute_ready (MMBaseModem  *modem,
     if (!mm_ublox_parse_uiproute_response_find_default_route_for_cid (response, ctx->cid, &error)) {
         mm_dbg ("Couldn't find default route: %s", error->message);
         g_error_free (error);
-        /* Try to add destination right away */
-        uiproute_add_destination (task);
+        /* Try to setup routes right away */
+        uiproute_setup (task);
         return;
     }
 
@@ -537,11 +597,12 @@ cgact_activate_ready (MMBaseModem  *modem,
         return;
     }
 
-    /* If there are no custom APN destinations, then we're just fine with the
+    /* If there are no custom APN destinations, then we will setup a custom default route
+     * over this connection.'re just fine with the
      * default route generated */
     if (!ctx->apn_destinations) {
-        complete_connected (task);
-        return;
+        mm_dbg ("no custom routes defined for APN, this will be a default route");
+        ctx->default_route = TRUE;
     }
 
     /*
